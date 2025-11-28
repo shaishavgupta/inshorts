@@ -5,36 +5,33 @@ import (
 	"fmt"
 	"math"
 	"sort"
+	"strings"
 
 	"news-inshorts/src/models"
 	"news-inshorts/src/repositories"
 	"news-inshorts/src/types"
 )
 
-// FilterByCategory creates a filter that filters articles by category using DB queries
-func FilterByCategory(repo repositories.ArticleRepository, category string) Filter {
+// FilterByCategory creates a filter that filters articles by category
+func FilterByCategory(repo repositories.ArticleRepository, categories []string) Filter {
 	return func(ctx context.Context, in []models.Article) ([]models.Article, error) {
-		if category == "" {
+		if len(categories) == 0 {
 			return in, nil
 		}
 
-		// Query database for articles with this category
 		dbResults, err := repo.FilterArticles(types.FilterArticlesRequest{
-			Category: category,
+			Category: strings.Join(categories, ","),
 		})
 		if err != nil {
 			return nil, fmt.Errorf("category filter failed: %w", err)
 		}
 
-		// If we have input articles, intersect with DB results
 		if len(in) > 0 {
-			// Create a map of article IDs from DB results for quick lookup
 			dbMap := make(map[string]models.Article)
 			for _, article := range dbResults {
 				dbMap[article.ID] = article
 			}
 
-			// Filter input articles to only include those in DB results
 			var filtered []models.Article
 			for _, article := range in {
 				if _, exists := dbMap[article.ID]; exists {
@@ -42,7 +39,6 @@ func FilterByCategory(repo repositories.ArticleRepository, category string) Filt
 				}
 			}
 
-			// Sort by publication date (most recent first)
 			sort.Slice(filtered, func(i, j int) bool {
 				return filtered[i].PublicationDate.After(filtered[j].PublicationDate)
 			})
@@ -50,19 +46,17 @@ func FilterByCategory(repo repositories.ArticleRepository, category string) Filt
 			return filtered, nil
 		}
 
-		// If no input articles, return DB results directly (already sorted by publication_date DESC)
 		return dbResults, nil
 	}
 }
 
-// FilterBySource creates a filter that filters articles by source name using DB queries
+// FilterBySource creates a filter that filters articles by source name
 func FilterBySource(repo repositories.ArticleRepository, source string) Filter {
 	return func(ctx context.Context, in []models.Article) ([]models.Article, error) {
 		if source == "" {
 			return in, nil
 		}
 
-		// Query database for articles from this source
 		dbResults, err := repo.FilterArticles(types.FilterArticlesRequest{
 			Source: source,
 		})
@@ -70,15 +64,12 @@ func FilterBySource(repo repositories.ArticleRepository, source string) Filter {
 			return nil, fmt.Errorf("source filter failed: %w", err)
 		}
 
-		// If we have input articles, intersect with DB results
 		if len(in) > 0 {
-			// Create a map of article IDs from DB results for quick lookup
 			dbMap := make(map[string]models.Article)
 			for _, article := range dbResults {
 				dbMap[article.ID] = article
 			}
 
-			// Filter input articles to only include those in DB results
 			var filtered []models.Article
 			for _, article := range in {
 				if _, exists := dbMap[article.ID]; exists {
@@ -86,7 +77,6 @@ func FilterBySource(repo repositories.ArticleRepository, source string) Filter {
 				}
 			}
 
-			// Sort by publication date (most recent first)
 			sort.Slice(filtered, func(i, j int) bool {
 				return filtered[i].PublicationDate.After(filtered[j].PublicationDate)
 			})
@@ -94,29 +84,24 @@ func FilterBySource(repo repositories.ArticleRepository, source string) Filter {
 			return filtered, nil
 		}
 
-		// If no input articles, return DB results directly (already sorted by publication_date DESC)
 		return dbResults, nil
 	}
 }
 
-// FilterByScore creates a filter that filters articles by relevance score threshold using DB queries
+// FilterByScore creates a filter that filters articles by relevance score threshold
 func FilterByScore(repo repositories.ArticleRepository, threshold float64) Filter {
 	return func(ctx context.Context, in []models.Article) ([]models.Article, error) {
-		// Query database for articles above the threshold
 		dbResults, err := repo.FindByScoreThreshold(threshold)
 		if err != nil {
 			return nil, fmt.Errorf("score filter failed: %w", err)
 		}
 
-		// If we have input articles, intersect with DB results
 		if len(in) > 0 {
-			// Create a map of article IDs from DB results for quick lookup
 			dbMap := make(map[string]models.Article)
 			for _, article := range dbResults {
 				dbMap[article.ID] = article
 			}
 
-			// Filter input articles to only include those in DB results
 			var filtered []models.Article
 			for _, article := range in {
 				if _, exists := dbMap[article.ID]; exists {
@@ -124,7 +109,6 @@ func FilterByScore(repo repositories.ArticleRepository, threshold float64) Filte
 				}
 			}
 
-			// Sort by relevance score (highest first)
 			sort.Slice(filtered, func(i, j int) bool {
 				return filtered[i].RelevanceScore > filtered[j].RelevanceScore
 			})
@@ -132,33 +116,28 @@ func FilterByScore(repo repositories.ArticleRepository, threshold float64) Filte
 			return filtered, nil
 		}
 
-		// If no input articles, return DB results directly (already sorted by relevance_score DESC)
 		return dbResults, nil
 	}
 }
 
-// FilterByTextSearch creates a filter that filters articles using text search via repository
+// FilterByTextSearch creates a filter that filters articles using text search
 func FilterByTextSearch(repo repositories.ArticleRepository, query []string) Filter {
 	return func(ctx context.Context, in []models.Article) ([]models.Article, error) {
 		if len(query) == 0 {
 			return in, nil
 		}
 
-		// Get search results from repository
 		searchResults, err := repo.SearchByText(query)
 		if err != nil {
 			return nil, fmt.Errorf("search filter failed: %w", err)
 		}
 
-		// If we have input articles, intersect with search results
 		if len(in) > 0 {
-			// Create a map of article IDs from search results for quick lookup
 			searchMap := make(map[string]models.Article)
 			for _, article := range searchResults {
 				searchMap[article.ID] = article
 			}
 
-			// Filter input articles to only include those in search results
 			var filtered []models.Article
 			for _, article := range in {
 				if _, exists := searchMap[article.ID]; exists {
@@ -166,7 +145,6 @@ func FilterByTextSearch(repo repositories.ArticleRepository, query []string) Fil
 				}
 			}
 
-			// Sort by relevance score (already sorted by DB, but maintain order for consistency)
 			sort.Slice(filtered, func(i, j int) bool {
 				return filtered[i].RelevanceScore > filtered[j].RelevanceScore
 			})
@@ -174,19 +152,17 @@ func FilterByTextSearch(repo repositories.ArticleRepository, query []string) Fil
 			return filtered, nil
 		}
 
-		// If no input articles, return search results directly (already sorted by relevance_score DESC from DB)
 		return searchResults, nil
 	}
 }
 
-// FilterByRadius creates a filter that filters articles by geographic proximity using DB queries
+// FilterByRadius creates a filter that filters articles by geographic proximity
 func FilterByRadius(repo repositories.ArticleRepository, lat, lon, radius float64) Filter {
 	return func(ctx context.Context, in []models.Article) ([]models.Article, error) {
 		if lat == 0 && lon == 0 {
 			return in, nil
 		}
 
-		// Get nearby results from repository using PostGIS (already sorted by distance)
 		nearbyResults, err := repo.FilterArticles(types.FilterArticlesRequest{
 			Lat:    lat,
 			Lon:    lon,
@@ -196,15 +172,12 @@ func FilterByRadius(repo repositories.ArticleRepository, lat, lon, radius float6
 			return nil, fmt.Errorf("nearby filter failed: %w", err)
 		}
 
-		// If we have input articles, intersect with nearby results
 		if len(in) > 0 {
-			// Create a map of article IDs from nearby results for quick lookup
 			nearbyMap := make(map[string]models.Article)
 			for _, article := range nearbyResults {
 				nearbyMap[article.ID] = article
 			}
 
-			// Filter input articles to only include those in nearby results
 			var filtered []models.Article
 			for _, article := range in {
 				if _, exists := nearbyMap[article.ID]; exists {
@@ -212,8 +185,6 @@ func FilterByRadius(repo repositories.ArticleRepository, lat, lon, radius float6
 				}
 			}
 
-			// Sort by distance (closest first) using Haversine formula
-			// Note: DB already sorted by distance, but we recalculate for consistency with filtered set
 			sort.Slice(filtered, func(i, j int) bool {
 				distI := haversineDistance(lat, lon, filtered[i].Latitude, filtered[i].Longitude)
 				distJ := haversineDistance(lat, lon, filtered[j].Latitude, filtered[j].Longitude)
@@ -223,7 +194,6 @@ func FilterByRadius(repo repositories.ArticleRepository, lat, lon, radius float6
 			return filtered, nil
 		}
 
-		// If no input articles, return nearby results directly (already sorted by distance from DB)
 		return nearbyResults, nil
 	}
 }
@@ -232,13 +202,11 @@ func FilterByRadius(repo repositories.ArticleRepository, lat, lon, radius float6
 func haversineDistance(lat1, lon1, lat2, lon2 float64) float64 {
 	const earthRadiusKm = 6371.0
 
-	// Convert degrees to radians
 	lat1Rad := lat1 * math.Pi / 180
 	lat2Rad := lat2 * math.Pi / 180
 	deltaLat := (lat2 - lat1) * math.Pi / 180
 	deltaLon := (lon2 - lon1) * math.Pi / 180
 
-	// Haversine formula
 	a := math.Sin(deltaLat/2)*math.Sin(deltaLat/2) +
 		math.Cos(lat1Rad)*math.Cos(lat2Rad)*
 			math.Sin(deltaLon/2)*math.Sin(deltaLon/2)

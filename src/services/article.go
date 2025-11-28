@@ -12,17 +12,17 @@ import (
 	"news-inshorts/src/types"
 )
 
-// NewsService defines the interface for news operations
-type NewsService interface {
-	ProcessNewsQuery(query string, location *models.Location) ([]models.Article, error)
+// ArticleService defines the interface for news operations
+type ArticleService interface {
+	ProcessArticleQuery(query string, location *models.Location) ([]models.Article, error)
 	GetTrendingNews(lat, lon float64, limit int) ([]models.Article, error)
 	FilterArticles(params types.FilterArticlesRequest) ([]models.Article, error)
 	LoadFromJSON(filepath string) (*repositories.LoadStats, error)
 	CreateArticle(article *models.Article) error
 }
 
-// newsService implements NewsService
-type newsService struct {
+// articleService implements ArticleService
+type articleService struct {
 	llmService      LLMService
 	filterChain     *FilterChain
 	trendingService TrendingService
@@ -30,14 +30,14 @@ type newsService struct {
 	logger          infra.Logger
 }
 
-// NewNewsService creates a new instance of NewsService
-func NewNewsService(
+// NewArticleService creates a new instance of ArticleService
+func NewArticleService(
 	llmService LLMService,
 	filterChain *FilterChain,
 	trendingService TrendingService,
 	articleRepo repositories.ArticleRepository,
-) NewsService {
-	return &newsService{
+) ArticleService {
+	return &articleService{
 		llmService:      llmService,
 		filterChain:     filterChain,
 		trendingService: trendingService,
@@ -46,10 +46,9 @@ func NewNewsService(
 	}
 }
 
-// ProcessNewsQuery orchestrates LLM query analysis and filter chain execution
+// ProcessArticleQuery orchestrates LLM query analysis and filter chain execution
 // to retrieve and enrich relevant news articles
-func (s *newsService) ProcessNewsQuery(query string, location *models.Location) ([]models.Article, error) {
-	// Step 1: Analyze query using LLM to extract intents and entities
+func (s *articleService) ProcessArticleQuery(query string, location *models.Location) ([]models.Article, error) {
 	analysis, err := s.llmService.ProcessQuery(query)
 	if err != nil {
 		s.logger.Error("Failed to analyze query with LLM", err, map[string]interface{}{
@@ -58,14 +57,12 @@ func (s *newsService) ProcessNewsQuery(query string, location *models.Location) 
 		return nil, fmt.Errorf("failed to analyze query: %w", err)
 	}
 
-	// Step 2: Execute filter chain with extracted intents
 	filteredArticles, err := s.filterChain.Execute(analysis.Intents, analysis.Entities, location)
 	if err != nil {
 		s.logger.Error("Failed to execute filter chain", err, nil)
 		return nil, fmt.Errorf("failed to filter articles: %w", err)
 	}
 
-	// Step 3: Limit results to top 5 articles
 	if len(filteredArticles) > 5 {
 		filteredArticles = filteredArticles[:5]
 	}
@@ -74,8 +71,7 @@ func (s *newsService) ProcessNewsQuery(query string, location *models.Location) 
 }
 
 // GetTrendingNews retrieves trending articles based on location
-// Implements caching, trending score computation, and article enrichment
-func (s *newsService) GetTrendingNews(lat, lon float64, limit int) ([]models.Article, error) {
+func (s *articleService) GetTrendingNews(lat, lon float64, limit int) ([]models.Article, error) {
 	s.logger.Info("Getting trending news", map[string]interface{}{
 		"latitude":  lat,
 		"longitude": lon,
@@ -87,13 +83,11 @@ func (s *newsService) GetTrendingNews(lat, lon float64, limit int) ([]models.Art
 		Longitude: lon,
 	}
 
-	// Step 1: Check cache first
 	cachedArticles, found := s.trendingService.GetCachedTrending(lat, lon, limit)
 	if found {
 		return cachedArticles, nil
 	}
 
-	// Step 2: Cache miss - retrieve all articles
 	articles, err := s.articleRepo.FindAll()
 	if err != nil {
 		s.logger.Error("Failed to retrieve articles for trending", err, nil)
@@ -104,7 +98,6 @@ func (s *newsService) GetTrendingNews(lat, lon float64, limit int) ([]models.Art
 		"count": len(articles),
 	})
 
-	// Step 3: Compute trending scores for each article
 	type articleWithScore struct {
 		article models.Article
 		score   float64
@@ -119,7 +112,6 @@ func (s *newsService) GetTrendingNews(lat, lon float64, limit int) ([]models.Art
 				"article_id": article.ID,
 				"error":      err.Error(),
 			})
-			// Skip articles with score computation errors
 			continue
 		}
 
@@ -129,7 +121,6 @@ func (s *newsService) GetTrendingNews(lat, lon float64, limit int) ([]models.Art
 		})
 	}
 
-	// Step 4: Sort by trending score (highest first)
 	sort.Slice(articlesWithScores, func(i, j int) bool {
 		return articlesWithScores[i].score > articlesWithScores[j].score
 	})
@@ -138,41 +129,35 @@ func (s *newsService) GetTrendingNews(lat, lon float64, limit int) ([]models.Art
 		"total_scored": len(articlesWithScores),
 	})
 
-	// Step 5: Apply limit
 	if len(articlesWithScores) > limit {
 		articlesWithScores = articlesWithScores[:limit]
 	}
 
-	// Extract articles for caching
 	trendingArticles := make([]models.Article, 0, len(articlesWithScores))
 	for _, aws := range articlesWithScores {
 		trendingArticles = append(trendingArticles, aws.article)
 	}
 
-	// Step 6: Cache results before returning
 	s.trendingService.CacheTrending(lat, lon, trendingArticles)
 
-	s.logger.Info("Computed and cached trending articles", map[string]interface{}{
+	s.logger.Info("Computed trending articles", map[string]interface{}{
 		"count": len(trendingArticles),
 	})
 
 	return trendingArticles, nil
 }
 
-// FilterArticles dynamically filters articles based on provided parameters
-// Supports filtering by category, source, and/or location (nearby)
-// Multiple filters can be combined
-func (s *newsService) FilterArticles(params types.FilterArticlesRequest) ([]models.Article, error) {
+// FilterArticles filters articles based on provided parameters
+func (s *articleService) FilterArticles(params types.FilterArticlesRequest) ([]models.Article, error) {
 	return s.articleRepo.FilterArticles(params)
 }
 
 // LoadFromJSON loads articles from a JSON file, enriches them with LLM summaries, and inserts them into the database
-func (s *newsService) LoadFromJSON(filepath string) (*repositories.LoadStats, error) {
+func (s *articleService) LoadFromJSON(filepath string) (*repositories.LoadStats, error) {
 	s.logger.Info("Starting to load articles from JSON", map[string]interface{}{
 		"filepath": filepath,
 	})
 
-	// Check if file exists
 	if _, err := os.Stat(filepath); os.IsNotExist(err) {
 		s.logger.Error("JSON file not found", err, map[string]interface{}{
 			"filepath": filepath,
@@ -180,7 +165,6 @@ func (s *newsService) LoadFromJSON(filepath string) (*repositories.LoadStats, er
 		return nil, fmt.Errorf("file not found: %s", filepath)
 	}
 
-	// Read the JSON file
 	file, err := os.Open(filepath)
 	if err != nil {
 		s.logger.Error("Failed to open JSON file", err, map[string]interface{}{
@@ -190,7 +174,6 @@ func (s *newsService) LoadFromJSON(filepath string) (*repositories.LoadStats, er
 	}
 	defer file.Close()
 
-	// Parse JSON
 	var articles []models.Article
 	decoder := json.NewDecoder(file)
 	if err := decoder.Decode(&articles); err != nil {
@@ -213,7 +196,6 @@ func (s *newsService) LoadFromJSON(filepath string) (*repositories.LoadStats, er
 		"total": len(articles),
 	})
 
-	// Enrich each article with summary via LLM service
 	s.logger.Info("Enriching articles with LLM summaries", map[string]interface{}{
 		"total": len(articles),
 	})
@@ -226,13 +208,11 @@ func (s *newsService) LoadFromJSON(filepath string) (*repositories.LoadStats, er
 				"title": articles[i].Title,
 				"error": err.Error(),
 			})
-			// Continue with empty summary if LLM fails
 			articles[i].Summary = ""
 		} else {
 			articles[i].Summary = summary
 		}
 
-		// Log progress every 50 articles
 		if (i+1)%50 == 0 {
 			s.logger.Info("Enrichment progress", map[string]interface{}{
 				"enriched": i + 1,
@@ -245,7 +225,6 @@ func (s *newsService) LoadFromJSON(filepath string) (*repositories.LoadStats, er
 		"total": len(articles),
 	})
 
-	// Bulk insert articles into the database
 	stats, err := s.articleRepo.BulkInsert(articles)
 	if err != nil {
 		s.logger.Error("Failed to bulk insert articles", err, map[string]interface{}{
@@ -265,13 +244,11 @@ func (s *newsService) LoadFromJSON(filepath string) (*repositories.LoadStats, er
 }
 
 // CreateArticle creates a single article in the database
-// Optionally enriches it with an LLM-generated summary if summary is empty
-func (s *newsService) CreateArticle(article *models.Article) error {
+func (s *articleService) CreateArticle(article *models.Article) error {
 	s.logger.Info("Creating article", map[string]interface{}{
 		"title": article.Title,
 	})
 
-	// If summary is empty, generate one using LLM
 	if article.Summary == "" {
 		summary, err := s.llmService.GenerateSummary(article.Title, article.Description)
 		if err != nil {
@@ -279,14 +256,12 @@ func (s *newsService) CreateArticle(article *models.Article) error {
 				"title": article.Title,
 				"error": err.Error(),
 			})
-			// Continue with empty summary if LLM fails
 			article.Summary = ""
 		} else {
 			article.Summary = summary
 		}
 	}
 
-	// Insert article into database
 	if err := s.articleRepo.Insert(article); err != nil {
 		s.logger.Error("Failed to create article", err, map[string]interface{}{
 			"title": article.Title,

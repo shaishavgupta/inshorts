@@ -10,7 +10,7 @@ import (
 
 // Controllers holds all controller instances
 type Controllers struct {
-	News            *NewsController
+	Article         *ArticleController
 	UserInteraction *UserInteractionController
 	Services        *services.Services
 }
@@ -24,7 +24,7 @@ func NewControllers(
 	svcs := services.NewServices(cfg, db, redisClient)
 
 	return &Controllers{
-		News:            NewNewsController(svcs.News, svcs.Repos.Article),
+		Article:         NewArticleController(svcs.Article, svcs.Repos.Article),
 		UserInteraction: NewUserInteractionController(svcs.Repos.UserEvent),
 		Services:        svcs,
 	}

@@ -22,8 +22,8 @@ const (
 
 // Intent represents the determined purpose or retrieval strategy for a user query
 type Intent struct {
-	Type       string                 `json:"type" validate:"required,oneof=category score search source nearby"`
-	Parameters map[string]interface{} `json:"parameters"`
+	Type   string      `json:"type" validate:"required,oneof=category source nearby"`
+	Values interface{} `json:"values" validate:"required,min=1"`
 }
 
 // QueryAnalysis represents the result of LLM query processing
@@ -48,9 +48,7 @@ type Article struct {
 }
 
 // UnmarshalJSON implements json.Unmarshaler for Article
-// It handles the custom time format "2006-01-02T15:04:05" (without timezone)
 func (a *Article) UnmarshalJSON(data []byte) error {
-	// Define a temporary struct with string for publication_date
 	type Alias Article
 	aux := &struct {
 		PublicationDate string `json:"publication_date"`
@@ -63,7 +61,6 @@ func (a *Article) UnmarshalJSON(data []byte) error {
 		return err
 	}
 
-	// Parse the publication_date string in format "2006-01-02T15:04:05"
 	if aux.PublicationDate != "" {
 		parsedTime, err := time.Parse("2006-01-02T15:04:05", aux.PublicationDate)
 		if err != nil {

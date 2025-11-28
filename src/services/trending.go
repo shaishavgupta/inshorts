@@ -117,17 +117,14 @@ func (s *trendingService) computeGeoScore(distanceKm float64) float64 {
 }
 
 // calculateDistance computes the distance between two geographic coordinates using Haversine formula
-// Returns distance in kilometers
 func (s *trendingService) calculateDistance(lat1, lon1, lat2, lon2 float64) float64 {
 	const earthRadiusKm = 6371.0
 
-	// Convert degrees to radians
 	lat1Rad := lat1 * math.Pi / 180.0
 	lon1Rad := lon1 * math.Pi / 180.0
 	lat2Rad := lat2 * math.Pi / 180.0
 	lon2Rad := lon2 * math.Pi / 180.0
 
-	// Haversine formula
 	dLat := lat2Rad - lat1Rad
 	dLon := lon2Rad - lon1Rad
 
@@ -141,11 +138,9 @@ func (s *trendingService) calculateDistance(lat1, lon1, lat2, lon2 float64) floa
 }
 
 // GetCachedTrending retrieves cached trending articles for a location
-// Returns articles and true if cache hit, nil and false if cache miss
 func (s *trendingService) GetCachedTrending(lat, lon float64, limit int) ([]models.Article, bool) {
 	cacheKey := s.generateCacheKey(lat, lon, limit)
 
-	// Get data from Redis
 	val, err := s.redisClient.Get(s.ctx, cacheKey).Result()
 	if err == redis.Nil {
 		s.log.Debug("Cache miss for trending articles", map[string]interface{}{
@@ -160,14 +155,12 @@ func (s *trendingService) GetCachedTrending(lat, lon float64, limit int) ([]mode
 		return nil, false
 	}
 
-	// Deserialize articles from JSON
 	var articles []models.Article
 	if err := json.Unmarshal([]byte(val), &articles); err != nil {
 		s.log.Warn("Failed to unmarshal cached articles", map[string]interface{}{
 			"cache_key": cacheKey,
 			"error":     err.Error(),
 		})
-		// Delete invalid cache entry
 		s.redisClient.Del(s.ctx, cacheKey)
 		return nil, false
 	}
@@ -184,7 +177,6 @@ func (s *trendingService) GetCachedTrending(lat, lon float64, limit int) ([]mode
 func (s *trendingService) CacheTrending(lat, lon float64, articles []models.Article) {
 	cacheKey := s.generateCacheKey(lat, lon, len(articles))
 
-	// Serialize articles to JSON
 	data, err := json.Marshal(articles)
 	if err != nil {
 		s.log.Warn("Failed to marshal articles for cache", map[string]interface{}{
@@ -194,7 +186,6 @@ func (s *trendingService) CacheTrending(lat, lon float64, articles []models.Arti
 		return
 	}
 
-	// Store in Redis with TTL
 	if err := s.redisClient.Set(s.ctx, cacheKey, data, s.cacheTTL).Err(); err != nil {
 		s.log.Warn("Failed to cache articles in Redis", map[string]interface{}{
 			"cache_key": cacheKey,
@@ -202,18 +193,10 @@ func (s *trendingService) CacheTrending(lat, lon float64, articles []models.Arti
 		})
 		return
 	}
-
-	s.log.Debug("Cached trending articles", map[string]interface{}{
-		"cache_key": cacheKey,
-		"count":     len(articles),
-		"ttl":       s.cacheTTL,
-	})
 }
 
 // generateCacheKey creates a cache key from rounded coordinates and limit
-// Rounds coordinates to 2 decimal places (~1km precision)
 func (s *trendingService) generateCacheKey(lat, lon float64, limit int) string {
-	// Round to 2 decimal places for ~1km precision
 	latRounded := math.Round(lat*100) / 100
 	lonRounded := math.Round(lon*100) / 100
 

@@ -21,6 +21,272 @@ The application follows a three-layer architecture:
 - **Service Layer**: Implements business logic and orchestrates operations
 - **Repository Layer**: Manages database interactions
 
+## Coding Patterns
+
+This codebase implements several well-established design patterns and architectural principles:
+
+### 1. **Layered Architecture (Separation of Concerns)**
+
+The application is organized into distinct layers with clear responsibilities:
+
+- **Controllers** (`src/controllers/`): Handle HTTP requests, validate input, and format responses
+- **Services** (`src/services/`): Implement business logic and orchestrate operations
+- **Repositories** (`src/repositories/`): Abstract database operations and data access
+- **Models** (`src/models/`): Define domain entities and data structures
+- **Types** (`src/types/`): Define request/response DTOs with validation
+
+### 2. **Dependency Injection**
+
+All dependencies are injected through constructors, promoting testability and loose coupling:
+
+```go
+// Example: Service receives dependencies via constructor
+func NewArticleService(
+    llmService LLMService,
+    filterChain *FilterChain,
+    trendingService TrendingService,
+    articleRepo repositories.ArticleRepository,
+) ArticleService
+```
+
+**Benefits:**
+- Easy to mock dependencies for testing
+- Clear dependency relationships
+- Flexible component replacement
+
+### 3. **Interface-Based Design**
+
+Services and repositories use interfaces to define contracts:
+
+```go
+// Service interface
+type ArticleService interface {
+    ProcessArticleQuery(query string, location *models.Location) ([]models.Article, error)
+    GetTrendingNews(lat, lon float64, limit int) ([]models.Article, error)
+    // ...
+}
+```
+
+**Benefits:**
+- Enables polymorphism and easy testing
+- Allows multiple implementations
+- Reduces coupling between layers
+
+### 4. **Factory Pattern**
+
+Used for creating filters dynamically based on intent types:
+
+```go
+// FilterFactory creates filters from intent parameters
+type FilterFactory func(params map[string]interface{}) Filter
+
+// Registry maps intent types to factories
+filterRegistry map[string]FilterFactory
+```
+
+**Usage:** The `FilterChain` uses factories to create appropriate filters based on LLM-extracted intents.
+
+### 5. **Chain of Responsibility Pattern**
+
+The filter chain pattern processes articles through a series of filters:
+
+```go
+// Chain composes multiple filters into a pipeline
+func Chain(filters ...Filter) Filter {
+    return func(ctx context.Context, articles []models.Article) ([]models.Article, error) {
+        // Apply filters sequentially
+    }
+}
+```
+
+**Benefits:**
+- Flexible query processing
+- Easy to add/remove filters
+- Supports complex multi-intent queries
+
+### 6. **Singleton Pattern**
+
+The logger uses the singleton pattern to ensure a single instance across the application:
+
+```go
+var (
+    instance *structuredLogger
+    once     sync.Once
+)
+
+func GetLogger() Logger {
+    once.Do(func() {
+        // Initialize logger once
+    })
+    return instance
+}
+```
+
+**Benefits:**
+- Consistent logging configuration
+- Thread-safe initialization
+- Global access point
+
+### 7. **Repository Pattern**
+
+Data access is abstracted through repository interfaces:
+
+```go
+type ArticleRepository interface {
+    Insert(article *models.Article) error
+    FindAll() ([]models.Article, error)
+    FilterArticles(params types.FilterArticlesRequest) ([]models.Article, error)
+    // ...
+}
+```
+
+**Benefits:**
+- Decouples business logic from data access
+- Easy to swap database implementations
+- Centralized data access logic
+
+### 8. **Structured Logging**
+
+All logging uses structured fields for better observability:
+
+```go
+logger.Info("Processing query", map[string]interface{}{
+    "query": query,
+    "user_id": userID,
+    "duration": duration,
+})
+```
+
+**Benefits:**
+- Machine-readable logs
+- Easy to query and filter
+- Better debugging and monitoring
+
+### 9. **Request/Response DTOs with Validation**
+
+Separate types for API requests and responses with built-in validation:
+
+```go
+type QueryArticlesRequest struct {
+    Query string  `query:"query" validate:"required"`
+    Lat   float64 `query:"lat" validate:"omitempty,min=-90,max=90"`
+    Lon   float64 `query:"lon" validate:"omitempty,min=-180,max=180"`
+}
+
+func (r *QueryArticlesRequest) Validate() error {
+    // Custom validation logic
+}
+```
+
+**Benefits:**
+- Clear API contracts
+- Centralized validation
+- Type safety
+
+### 10. **Error Handling Middleware**
+
+Centralized error handling using Fiber's error handler:
+
+```go
+type AppError struct {
+    Code    int
+    Message string
+    Err     error
+}
+
+func ErrorHandler(c *fiber.Ctx, err error) error {
+    // Convert errors to appropriate HTTP responses
+}
+```
+
+**Benefits:**
+- Consistent error responses
+- Centralized error logging
+- Clean error propagation
+
+### 11. **Caching Strategy**
+
+Redis caching for expensive operations (trending news):
+
+```go
+// Check cache first
+cachedArticles, found := trendingService.GetCachedTrending(lat, lon, limit)
+if found {
+    return cachedArticles, nil
+}
+// Compute and cache
+trendingService.CacheTrending(lat, lon, articles)
+```
+
+**Benefits:**
+- Improved performance
+- Reduced database load
+- Configurable TTL
+
+### 12. **Context Pattern**
+
+Filters use `context.Context` for cancellation and timeout support:
+
+```go
+type Filter func(ctx context.Context, in []models.Article) ([]models.Article, error)
+```
+
+**Benefits:**
+- Request cancellation support
+- Timeout handling
+- Request-scoped values
+
+### 13. **Service Container Pattern**
+
+A `Services` struct holds all service instances for organized dependency management:
+
+```go
+type Services struct {
+    LLM         LLMService
+    Trending    TrendingService
+    Article     ArticleService
+    FilterChain *FilterChain
+    Repos       *repositories.Repositories
+}
+```
+
+**Benefits:**
+- Centralized service initialization
+- Easy dependency management
+- Clear service relationships
+
+### 14. **Infrastructure Abstraction**
+
+Infrastructure components (DB, Redis, Logger) are abstracted:
+
+```go
+type Infrastructure struct {
+    DB     *gorm.DB
+    Redis  *redis.Client
+    Logger Logger
+}
+```
+
+**Benefits:**
+- Easy to mock for testing
+- Centralized resource management
+- Graceful shutdown support
+
+### 15. **Custom JSON Unmarshaling**
+
+Models implement custom JSON unmarshaling for date parsing:
+
+```go
+func (a *Article) UnmarshalJSON(data []byte) error {
+    // Custom date parsing logic
+}
+```
+
+**Benefits:**
+- Flexible date format handling
+- Type conversion at unmarshal time
+- Cleaner API
+
 ## Prerequisites
 
 - Go 1.21 or higher
@@ -225,26 +491,7 @@ docker exec contextual-news-api ./loader -file /tmp/articles.json
 
 ### Method 2: API Endpoint
 
-You can also load data via the REST API endpoint.
-
-```http
-POST /api/v1/news/load
-Content-Type: application/json
-
-{
-  "filepath": "/path/to/articles.json"
-}
-```
-
-**Response:**
-```json
-{
-  "success": true,
-  "message": "Data loaded successfully"
-}
-```
-
-**Note:** The filepath must be accessible from the server's filesystem. This method is useful for automated workflows or when the JSON file is already on the server.
+You can also load data via the REST API endpoint. See the [Load Data from JSON](#load-data-from-json) endpoint documentation for details.
 
 **Example with curl:**
 ```bash
@@ -252,6 +499,8 @@ curl -X POST http://localhost:8080/api/v1/news/load \
   -H "Content-Type: application/json" \
   -d '{"filepath": "/data/articles.json"}'
 ```
+
+**Note:** The filepath must be accessible from the server's filesystem. This method is useful for automated workflows or when the JSON file is already on the server.
 
 ### Loading Progress and Statistics
 
@@ -279,29 +528,102 @@ docker logs contextual-news-api
 GET /health
 ```
 
+**Description:** Health check endpoint to verify the API is running.
+
 **Response:**
 ```json
 {
   "status": "healthy",
-  "service": "contextual-news-api"
+  "service": "inshorts-api"
 }
 ```
 
-### Query News
+**Status Codes:**
+- `200 OK`: Service is healthy
 
-Process a natural language query and retrieve relevant news articles.
+---
+
+### Create Article
 
 ```http
-POST /api/v1/news/query
+POST /api/v1/news
 Content-Type: application/json
+```
 
+**Description:** Create a new article in the database. The article will be automatically enriched with an LLM-generated summary if not provided.
+
+**Request Body:**
+```json
 {
-  "query": "Latest technology news about AI near San Francisco",
-  "location": {
+  "title": "Article Title",
+  "description": "Article description text",
+  "url": "https://example.com/article",
+  "publication_date": "2024-04-28T10:00:00",
+  "source_name": "News Source",
+  "category": ["Technology", "Business"],
+  "relevance_score": 0.85,
+  "latitude": 37.7749,
+  "longitude": -122.4194,
+  "summary": "Optional pre-generated summary"
+}
+```
+
+**Field Requirements:**
+- `title` (required): Article headline
+- `url` (required): Valid URL to the full article
+- `publication_date` (required): ISO 8601 format: `2006-01-02T15:04:05`
+- `source_name` (required): Name of the news source
+- `category` (required): Array of category strings (at least one)
+- `relevance_score` (required): Float between 0 and 1
+- `latitude` (required): Float between -90 and 90
+- `longitude` (required): Float between -180 and 180
+- `description` (optional): Article summary or excerpt
+- `summary` (optional): LLM-generated summary (auto-generated if not provided)
+
+**Response:**
+```json
+{
+  "success": true,
+  "message": "Article created successfully",
+  "article": {
+    "id": "uuid",
+    "title": "Article Title",
+    "description": "Article description...",
+    "url": "https://example.com/article",
+    "publication_date": "2024-04-28T10:00:00Z",
+    "source_name": "News Source",
+    "category": ["Technology"],
+    "relevance_score": 0.85,
     "latitude": 37.7749,
-    "longitude": -122.4194
+    "longitude": -122.4194,
+    "summary": "LLM-generated summary..."
   }
 }
+```
+
+**Status Codes:**
+- `201 Created`: Article created successfully
+- `400 Bad Request`: Invalid input parameters
+- `500 Internal Server Error`: Failed to create article
+
+---
+
+### Query News (Natural Language)
+
+```http
+GET /api/v1/news/query?query=<query>&lat=<latitude>&lon=<longitude>
+```
+
+**Description:** Process a natural language query using LLM to extract intents and entities, then retrieve relevant news articles using a filter chain.
+
+**Query Parameters:**
+- `query` (required): Natural language query string
+- `lat` (optional): Latitude (-90 to 90), must be provided with `lon`
+- `lon` (optional): Longitude (-180 to 180), must be provided with `lat`
+
+**Example:**
+```http
+GET /api/v1/news/query?query=Latest technology news about AI near San Francisco&lat=37.7749&lon=-122.4194
 ```
 
 **Response:**
@@ -319,25 +641,38 @@ Content-Type: application/json
       "relevance_score": 0.92,
       "latitude": 37.7749,
       "longitude": -122.4194,
-      "llm_summary": "This article discusses...",
-      "distance": 2.5
+      "summary": "LLM-generated summary..."
     }
   ]
 }
 ```
 
+**Note:** Returns a maximum of 5 articles, sorted by relevance.
+
+**Status Codes:**
+- `200 OK`: Query processed successfully
+- `400 Bad Request`: Invalid query parameters
+- `500 Internal Server Error`: Failed to process query
+
+---
+
 ### Get Trending News
 
-Retrieve trending news articles based on location and user engagement.
+```http
+GET /api/v1/news/trending?lat=<latitude>&lon=<longitude>&limit=<limit>
+```
 
+**Description:** Retrieve trending news articles based on location and user engagement metrics. Results are cached in Redis for performance.
+
+**Query Parameters:**
+- `lat` (required): Latitude (-90 to 90)
+- `lon` (required): Longitude (-180 to 180)
+- `limit` (optional): Number of articles to return (default: 10, max: 100)
+
+**Example:**
 ```http
 GET /api/v1/news/trending?lat=37.7749&lon=-122.4194&limit=10
 ```
-
-**Query Parameters:**
-- `lat` (required): Latitude
-- `lon` (required): Longitude
-- `limit` (optional): Number of articles to return (default: 10)
 
 **Response:**
 ```json
@@ -354,20 +689,130 @@ GET /api/v1/news/trending?lat=37.7749&lon=-122.4194&limit=10
       "relevance_score": 0.88,
       "latitude": 37.7749,
       "longitude": -122.4194,
-      "trending_score": 0.95
+      "summary": "LLM-generated summary..."
     }
   ]
 }
 ```
 
-### Record User Interaction
+**Status Codes:**
+- `200 OK`: Trending articles retrieved successfully
+- `400 Bad Request`: Invalid query parameters
+- `500 Internal Server Error`: Failed to retrieve trending news
 
-Record a user interaction event with an article.
+---
+
+### Filter Articles
 
 ```http
-POST /api/v1/interactions
-Content-Type: application/json
+GET /api/v1/news/filter?category=<category>&source=<source>&lat=<latitude>&lon=<longitude>&radius=<radius>
+```
 
+**Description:** Filter articles by category, source, or geographic location. At least one filter parameter must be provided.
+
+**Query Parameters:**
+- `category` (optional): Filter by category name
+- `source` (optional): Filter by source name
+- `lat` (optional): Latitude for location-based filtering (must be provided with `lon`)
+- `lon` (optional): Longitude for location-based filtering (must be provided with `lat`)
+- `radius` (optional): Radius in kilometers for location-based filtering (default: 50km)
+
+**Example:**
+```http
+GET /api/v1/news/filter?category=Technology&source=Reuters&lat=37.7749&lon=-122.4194&radius=25
+```
+
+**Response:**
+```json
+{
+  "articles": [
+    {
+      "id": "uuid",
+      "title": "Filtered Article",
+      "description": "Article description...",
+      "url": "https://example.com/article",
+      "publication_date": "2024-04-28T10:00:00Z",
+      "source_name": "Reuters",
+      "category": ["Technology"],
+      "relevance_score": 0.90,
+      "latitude": 37.7749,
+      "longitude": -122.4194,
+      "summary": "LLM-generated summary..."
+    }
+  ]
+}
+```
+
+**Status Codes:**
+- `200 OK`: Articles filtered successfully
+- `400 Bad Request`: Invalid filter parameters or no filters provided
+- `500 Internal Server Error`: Failed to filter articles
+
+---
+
+### Load Data from JSON
+
+```http
+POST /api/v1/news/load
+Content-Type: application/json
+```
+
+**Description:** Load articles from a JSON file on the server filesystem. Articles are automatically enriched with LLM-generated summaries before insertion.
+
+**Request Body:**
+```json
+{
+  "filepath": "/path/to/articles.json"
+}
+```
+
+**Field Requirements:**
+- `filepath` (required): Absolute or relative path to the JSON file on the server
+
+**Response (Success):**
+```json
+{
+  "success": true,
+  "message": "Data loaded successfully",
+  "total_articles": 100,
+  "success_count": 98,
+  "error_count": 2
+}
+```
+
+**Response (Validation Errors):**
+```json
+{
+  "success": false,
+  "message": "Validation failed",
+  "total_articles": 100,
+  "success_count": 95,
+  "error_count": 5,
+  "validation_errors": [
+    "Article at index 5: title is required",
+    "Article at index 12: invalid URL format"
+  ]
+}
+```
+
+**Status Codes:**
+- `200 OK`: Data loaded successfully (may include validation errors)
+- `400 Bad Request`: Validation failed or file not found
+- `500 Internal Server Error`: Failed to load data
+
+---
+
+### Record User Interaction
+
+```http
+POST /api/v1/interactions/record
+Content-Type: application/json
+```
+
+**Description:** Record a user interaction event (view or click) with an article. Used for computing trending scores.
+
+**Request Body:**
+```json
 {
   "user_id": "user123",
   "article_id": "article-uuid",
@@ -378,6 +823,14 @@ Content-Type: application/json
   }
 }
 ```
+
+**Field Requirements:**
+- `user_id` (required): Unique identifier for the user
+- `article_id` (required): UUID of the article
+- `event_type` (required): Must be either `"view"` or `"click"`
+- `location` (required): Geographic coordinates
+  - `latitude` (required): Float between -90 and 90
+  - `longitude` (required): Float between -180 and 180
 
 **Event Types:**
 - `view`: User viewed the article
@@ -391,42 +844,53 @@ Content-Type: application/json
 }
 ```
 
+**Status Codes:**
+- `200 OK`: Interaction recorded successfully
+- `400 Bad Request`: Invalid request body or missing required fields
+- `500 Internal Server Error`: Failed to record interaction
+
 ## Query Examples
 
 ### Category-based Query
-```json
-{
-  "query": "Show me sports news"
-}
+```http
+GET /api/v1/news/query?query=Show me sports news
 ```
 
 ### Location-based Query
-```json
-{
-  "query": "News near me",
-  "location": {
-    "latitude": 37.7749,
-    "longitude": -122.4194
-  }
-}
+```http
+GET /api/v1/news/query?query=News near me&lat=37.7749&lon=-122.4194
 ```
 
 ### Source-based Query
-```json
-{
-  "query": "Latest articles from Reuters"
-}
+```http
+GET /api/v1/news/query?query=Latest articles from Reuters
 ```
 
 ### Complex Multi-intent Query
-```json
-{
-  "query": "Technology news about artificial intelligence from New York Times near San Francisco",
-  "location": {
-    "latitude": 37.7749,
-    "longitude": -122.4194
-  }
-}
+```http
+GET /api/v1/news/query?query=Technology news about artificial intelligence from New York Times near San Francisco&lat=37.7749&lon=-122.4194
+```
+
+### Filter Examples
+
+**Filter by Category:**
+```http
+GET /api/v1/news/filter?category=Technology
+```
+
+**Filter by Source:**
+```http
+GET /api/v1/news/filter?source=Reuters
+```
+
+**Filter by Location:**
+```http
+GET /api/v1/news/filter?lat=37.7749&lon=-122.4194&radius=25
+```
+
+**Combined Filters:**
+```http
+GET /api/v1/news/filter?category=Technology&source=Reuters&lat=37.7749&lon=-122.4194
 ```
 
 ## Error Handling
@@ -452,37 +916,45 @@ The API returns appropriate HTTP status codes and error messages:
 
 ```
 .
-├── cmd/
-│   └── api/
-│       └── main.go              # Application entry point
+├── main.go                      # Application entry point
 ├── src/
-│   ├── config/
-│   │   ├── config.go            # Configuration management
-│   │   └── database.go          # Database initialization
 │   ├── controllers/
-│   │   ├── news_controller.go
-│   │   └── user_interaction_controller.go
+│   │   ├── article.go           # Article controller (CRUD, query, filter, trending)
+│   │   ├── controllers.go       # Controller factory/container
+│   │   └── user_interaction.go  # User interaction controller
+│   ├── infra/
+│   │   ├── config.go            # Configuration management
+│   │   ├── database.go          # Database initialization (GORM)
+│   │   ├── infra.go             # Infrastructure container
+│   │   ├── logger.go            # Structured logger (singleton)
+│   │   └── redis.go             # Redis client initialization
 │   ├── middleware/
-│   │   └── error_handler.go
+│   │   └── error_handler.go    # Centralized error handling
 │   ├── models/
-│   │   └── models.go            # Data models
+│   │   └── models.go           # Domain models (Article, UserEvent, Intent, etc.)
 │   ├── repositories/
-│   │   ├── article_repository.go
-│   │   └── user_event_repository.go
-│   └── services/
-│       ├── filter_chain.go
-│       ├── filters.go
-│       ├── llm_service.go
-│       ├── news_service.go
-│       └── trending_service.go
-├── pkg/
-│   └── logger/
-│       └── logger.go            # Singleton logger
+│   │   ├── article.go           # Article repository (data access)
+│   │   ├── repositories.go      # Repository factory/container
+│   │   └── user_event.go        # User event repository
+│   ├── routes/
+│   │   └── routes.go           # Route definitions and middleware setup
+│   ├── services/
+│   │   ├── article.go           # Article service (business logic)
+│   │   ├── filter_chain.go     # Filter chain orchestrator
+│   │   ├── filters.go          # Individual filter implementations
+│   │   ├── llm.go              # LLM service (OpenAI integration)
+│   │   ├── services.go         # Service factory/container
+│   │   └── trending.go         # Trending news computation
+│   └── types/
+│       ├── article_types.go    # Article-related request/response DTOs
+│       └── user_interaction_types.go  # User interaction DTOs
 ├── .env.example                 # Example environment variables
 ├── docker-compose.yml           # Docker Compose configuration
 ├── Dockerfile                   # Docker image definition
 ├── go.mod                       # Go module definition
+├── go.sum                       # Go module checksums
 ├── init.sql                     # Database initialization script
+├── news_data.json               # Sample news data
 └── README.md                    # This file
 ```
 

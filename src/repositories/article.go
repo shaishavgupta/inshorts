@@ -106,21 +106,18 @@ func (r *articleRepository) FilterArticles(params types.FilterArticlesRequest) (
 	}
 
 	if params.Source != "" {
-		// Escape single quotes in source name
 		escapedSource := strings.ReplaceAll(params.Source, "'", "''")
 		conditions = append(conditions, fmt.Sprintf(`source_name = '%s'`, escapedSource))
 	}
 
 	if params.Lat != 0 && params.Lon != 0 {
 		if params.Radius > 0 {
-			// Use PostGIS for radius-based filtering
 			conditions = append(conditions, fmt.Sprintf(`ST_DWithin(
 				ST_SetSRID(ST_MakePoint(longitude, latitude), 4326)::geography,
 				ST_SetSRID(ST_MakePoint(%f, %f), 4326)::geography,
 				%f * 1000
 			)`, params.Lon, params.Lat, params.Radius))
 		} else {
-			// Exact location match
 			conditions = append(conditions, fmt.Sprintf(`latitude = %f AND longitude = %f`, params.Lat, params.Lon))
 		}
 	}
@@ -131,7 +128,6 @@ func (r *articleRepository) FilterArticles(params types.FilterArticlesRequest) (
 
 	var orderBy string
 	if params.Lat != 0 && params.Lon != 0 && params.Radius > 0 {
-		// Order by distance when using radius
 		orderBy = fmt.Sprintf(`ST_Distance(
 			ST_SetSRID(ST_MakePoint(longitude, latitude), 4326)::geography,
 			ST_SetSRID(ST_MakePoint(%f, %f), 4326)::geography
@@ -228,12 +224,10 @@ func (r *articleRepository) FindByScoreThreshold(threshold float64) ([]models.Ar
 
 // SearchByText performs text search on article titles and descriptions
 func (r *articleRepository) SearchByText(query []string) ([]models.Article, error) {
-	// Uses simple text search with ILIKE for pattern matching
 	if len(query) == 0 {
 		return []models.Article{}, nil
 	}
 
-	// Build WHERE clause with OR conditions for each query term
 	var conditions []string
 	var args []interface{}
 
@@ -283,7 +277,6 @@ func (r *articleRepository) SearchByText(query []string) ([]models.Article, erro
 func (r *articleRepository) validateArticle(article *models.Article, index int) []string {
 	var errors []string
 
-	// Validate required fields
 	if article.Title == "" {
 		errors = append(errors, fmt.Sprintf("Article %d: title is required", index))
 	}
@@ -300,22 +293,18 @@ func (r *articleRepository) validateArticle(article *models.Article, index int) 
 		errors = append(errors, fmt.Sprintf("Article %d: at least one category is required", index))
 	}
 
-	// Validate relevance score
 	if article.RelevanceScore < 0 || article.RelevanceScore > 1 {
 		errors = append(errors, fmt.Sprintf("Article %d: relevance_score must be between 0 and 1", index))
 	}
 
-	// Validate latitude
 	if article.Latitude < -90 || article.Latitude > 90 {
 		errors = append(errors, fmt.Sprintf("Article %d: latitude must be between -90 and 90", index))
 	}
 
-	// Validate longitude
 	if article.Longitude < -180 || article.Longitude > 180 {
 		errors = append(errors, fmt.Sprintf("Article %d: longitude must be between -180 and 180", index))
 	}
 
-	// Validate publication date
 	if article.PublicationDate.IsZero() {
 		errors = append(errors, fmt.Sprintf("Article %d: publication_date is required", index))
 	}
@@ -339,7 +328,6 @@ func (r *articleRepository) BulkInsert(articles []models.Article) (*LoadStats, e
 		"total": len(articles),
 	})
 
-	// Validate all articles first
 	r.log.Info("Validating article structures", map[string]interface{}{
 		"total": len(articles),
 	})
@@ -351,7 +339,6 @@ func (r *articleRepository) BulkInsert(articles []models.Article) (*LoadStats, e
 		}
 	}
 
-	// If there are validation errors, return them without inserting
 	if len(stats.ValidationErrors) > 0 {
 		r.log.Error("Validation failed for articles", nil, map[string]interface{}{
 			"error_count": len(stats.ValidationErrors),
@@ -361,7 +348,6 @@ func (r *articleRepository) BulkInsert(articles []models.Article) (*LoadStats, e
 
 	r.log.Info("All articles validated successfully", nil)
 
-	// Begin transaction for batch insert
 	tx := r.db.Begin()
 	defer func() {
 		if r := recover(); r != nil {
@@ -369,7 +355,6 @@ func (r *articleRepository) BulkInsert(articles []models.Article) (*LoadStats, e
 		}
 	}()
 
-	// Prepare insert statement with summary field
 	insertQuery := `
 		INSERT INTO articles (
 			id,
@@ -401,7 +386,6 @@ func (r *articleRepository) BulkInsert(articles []models.Article) (*LoadStats, e
 	successCount := 0
 	errorCount := 0
 
-	// Insert articles in batches
 	for i, article := range articles {
 		if err := tx.Exec(insertQuery,
 			article.ID,
@@ -426,7 +410,6 @@ func (r *articleRepository) BulkInsert(articles []models.Article) (*LoadStats, e
 
 		successCount++
 
-		// Log progress every 100 articles
 		if (i+1)%100 == 0 {
 			r.log.Info("Bulk insert progress", map[string]interface{}{
 				"loaded": i + 1,
@@ -435,7 +418,6 @@ func (r *articleRepository) BulkInsert(articles []models.Article) (*LoadStats, e
 		}
 	}
 
-	// Commit transaction
 	if err := tx.Commit().Error; err != nil {
 		r.log.Error("Failed to commit transaction", err, nil)
 		return nil, fmt.Errorf("failed to commit transaction: %w", err)
@@ -455,7 +437,6 @@ func (r *articleRepository) BulkInsert(articles []models.Article) (*LoadStats, e
 
 // Insert inserts a single article into the database
 func (r *articleRepository) Insert(article *models.Article) error {
-	// Validate article
 	validationErrors := r.validateArticle(article, 0)
 	if len(validationErrors) > 0 {
 		r.log.Error("Validation failed for article", nil, map[string]interface{}{
@@ -464,7 +445,6 @@ func (r *articleRepository) Insert(article *models.Article) error {
 		return fmt.Errorf("validation failed: %v", validationErrors)
 	}
 
-	// Prepare insert statement with summary field
 	insertQuery := `
 		INSERT INTO articles (
 			id,
@@ -513,7 +493,6 @@ func (r *articleRepository) Insert(article *models.Article) error {
 		return fmt.Errorf("failed to insert article: %w", err)
 	}
 
-	// Update article ID if it was generated
 	if article.ID == "" {
 		article.ID = insertedID
 	}

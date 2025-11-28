@@ -6,15 +6,15 @@ import (
 	"news-inshorts/src/models"
 )
 
-// QueryNewsRequest represents the query parameters for GET /api/v1/news/query
-type QueryNewsRequest struct {
+// QueryArticlesRequest represents the query parameters for GET /api/v1/news/query
+type QueryArticlesRequest struct {
 	Query    string           `query:"query" validate:"required"`
 	Lat      float64          `query:"lat" validate:"omitempty,min=-90,max=90"`
 	Lon      float64          `query:"lon" validate:"omitempty,min=-180,max=180"`
 	Location *models.Location `json:"-"` // Computed field, not from query params
 }
 
-func (r *QueryNewsRequest) Validate() error {
+func (r *QueryArticlesRequest) Validate() error {
 	// Validate required fields
 	if r.Query == "" {
 		return fmt.Errorf("query parameter is required")
@@ -44,8 +44,8 @@ func (r *QueryNewsRequest) Validate() error {
 	return nil
 }
 
-// QueryNewsResponse represents the response for news query endpoint
-type QueryNewsResponse struct {
+// QueryArticlesResponse represents the response for news query endpoint
+type QueryArticlesResponse struct {
 	Articles []models.Article `json:"articles"`
 }
 

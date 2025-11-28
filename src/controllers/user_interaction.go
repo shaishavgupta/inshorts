@@ -26,11 +26,9 @@ func NewUserInteractionController(userEventRepo repositories.UserEventRepository
 }
 
 // RecordInteraction handles POST /api/v1/interactions
-// Records user interaction events with news articles
 func (uic *UserInteractionController) RecordInteraction(c *fiber.Ctx) error {
 	var req types.RecordInteractionRequest
 
-	// Parse and validate request body
 	if err := c.BodyParser(&req); err != nil {
 		uic.logger.Error("Failed to parse request body", err, map[string]interface{}{
 			"path": c.Path(),
@@ -40,7 +38,6 @@ func (uic *UserInteractionController) RecordInteraction(c *fiber.Ctx) error {
 		})
 	}
 
-	// Validate required fields
 	if req.UserID == "" {
 		return c.Status(fiber.StatusBadRequest).JSON(fiber.Map{
 			"error": "user_id field is required",
@@ -59,14 +56,12 @@ func (uic *UserInteractionController) RecordInteraction(c *fiber.Ctx) error {
 		})
 	}
 
-	// Validate event type
 	if req.EventType != "view" && req.EventType != "click" {
 		return c.Status(fiber.StatusBadRequest).JSON(fiber.Map{
 			"error": "event_type must be either 'view' or 'click'",
 		})
 	}
 
-	// Validate location
 	if req.Location.Latitude < -90 || req.Location.Latitude > 90 {
 		return c.Status(fiber.StatusBadRequest).JSON(fiber.Map{
 			"error": "Latitude must be between -90 and 90",
@@ -85,7 +80,6 @@ func (uic *UserInteractionController) RecordInteraction(c *fiber.Ctx) error {
 		"event_type": req.EventType,
 	})
 
-	// Create UserEvent model
 	event := &models.UserEvent{
 		UserID:    req.UserID,
 		ArticleID: req.ArticleID,
@@ -95,7 +89,6 @@ func (uic *UserInteractionController) RecordInteraction(c *fiber.Ctx) error {
 		Longitude: req.Location.Longitude,
 	}
 
-	// Call UserEventRepository to create the event
 	err := uic.userEventRepo.Create(event)
 	if err != nil {
 		uic.logger.Error("Failed to record user interaction", err, map[string]interface{}{
@@ -109,7 +102,6 @@ func (uic *UserInteractionController) RecordInteraction(c *fiber.Ctx) error {
 		})
 	}
 
-	// Return success response with event ID
 	response := types.RecordInteractionResponse{
 		Success: true,
 		EventID: event.ID,

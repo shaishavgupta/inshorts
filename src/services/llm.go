@@ -89,7 +89,6 @@ func (s *llmService) ProcessQuery(query string) (*models.QueryAnalysis, error) {
 		return nil, fmt.Errorf("LLM service unavailable: %w", err)
 	}
 
-	// Parse the LLM response to extract QueryAnalysis
 	analysis, err := s.parseQueryAnalysis(response)
 	if err != nil {
 		s.logger.Error("Failed to parse LLM response", err, map[string]interface{}{
@@ -117,7 +116,6 @@ func (s *llmService) GenerateSummary(title, description string) (string, error) 
 			"title": title,
 			"error": err.Error(),
 		})
-		// Return empty string instead of error to handle gracefully
 		return "", nil
 	}
 
@@ -273,7 +271,6 @@ func (s *llmService) callOpenAI(prompt string, maxTokens int) (string, error) {
 }
 
 // llmQueryResponse represents the raw JSON response structure from LLM
-// This is a temporary structure used only for parsing the LLM JSON response
 type llmQueryResponse struct {
 	Entities []string `json:"entities"`
 	Intent   struct {
@@ -294,7 +291,6 @@ type llmQueryResponse struct {
 func (s *llmService) parseQueryAnalysis(response string) (*models.QueryAnalysis, error) {
 	var llmResp llmQueryResponse
 
-	// Try to extract JSON from the response (in case LLM adds extra text)
 	startIdx := bytes.IndexByte([]byte(response), '{')
 	endIdx := bytes.LastIndexByte([]byte(response), '}')
 
@@ -308,41 +304,29 @@ func (s *llmService) parseQueryAnalysis(response string) (*models.QueryAnalysis,
 		return nil, fmt.Errorf("failed to unmarshal JSON: %w", err)
 	}
 
-	// Convert LLM response to QueryAnalysis model
 	analysis := &models.QueryAnalysis{
 		Entities: llmResp.Entities,
 		Intents:  make([]models.Intent, 0),
 	}
 
-	// Convert intent structure to Intent array
-	// Category intent
 	if len(llmResp.Intent.Category.Values) > 0 {
 		analysis.Intents = append(analysis.Intents, models.Intent{
-			Type: models.IntentTypeCategory,
-			Parameters: map[string]interface{}{
-				"values": llmResp.Intent.Category.Values,
-			},
+			Type:   models.IntentTypeCategory,
+			Values: llmResp.Intent.Category.Values,
 		})
 	}
 
-	// Source intent
 	if len(llmResp.Intent.Source.Values) > 0 {
 		analysis.Intents = append(analysis.Intents, models.Intent{
-			Type: models.IntentTypeSource,
-			Parameters: map[string]interface{}{
-				"values": llmResp.Intent.Source.Values,
-			},
+			Type:   models.IntentTypeSource,
+			Values: llmResp.Intent.Source.Values,
 		})
 	}
 
-	// Nearby intent
 	if llmResp.Intent.Nearby.Lat != nil && llmResp.Intent.Nearby.Lon != nil {
 		analysis.Intents = append(analysis.Intents, models.Intent{
-			Type: models.IntentTypeNearby,
-			Parameters: map[string]interface{}{
-				"lat": *llmResp.Intent.Nearby.Lat,
-				"lon": *llmResp.Intent.Nearby.Lon,
-			},
+			Type:   models.IntentTypeNearby,
+			Values: []string{fmt.Sprintf("%f", *llmResp.Intent.Nearby.Lat), fmt.Sprintf("%f", *llmResp.Intent.Nearby.Lon)},
 		})
 	}
 

@@ -12,7 +12,7 @@ import (
 type Services struct {
 	LLM         LLMService
 	Trending    TrendingService
-	News        NewsService
+	Article     ArticleService
 	FilterChain *FilterChain
 	Repos       *repositories.Repositories
 }
@@ -37,12 +37,12 @@ func NewServices(
 	trendingService := NewTrendingService(repos.UserEvent, redisClient, cfg.Cache.TTL)
 
 	// Initialize news service
-	newsService := NewNewsService(llmService, filterChain, trendingService, repos.Article)
+	newsService := NewArticleService(llmService, filterChain, trendingService, repos.Article)
 
 	return &Services{
 		LLM:         llmService,
 		Trending:    trendingService,
-		News:        newsService,
+		Article:     newsService,
 		FilterChain: filterChain,
 		Repos:       repos,
 	}

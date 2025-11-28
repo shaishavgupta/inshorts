@@ -37,12 +37,11 @@ type FilterChain struct {
 }
 
 // NewFilterChain creates a new FilterChain instance
-// If articleRepo is provided, it will register all default filters
-// If articleRepo is nil, returns an empty FilterChain without default filters
 func NewFilterChain(articleRepo repositories.ArticleRepository) *FilterChain {
 	chain := &FilterChain{
 		filterRegistry: make(map[string]FilterFactory),
 		articleRepo:    articleRepo,
+		logger:         infra.GetLogger(),
 	}
 
 	if articleRepo != nil {
@@ -53,14 +52,15 @@ func NewFilterChain(articleRepo repositories.ArticleRepository) *FilterChain {
 }
 
 // RegisterDefaultFilters registers all default filters to the chain
-// This method maps intent types (keywords) to their filter factory functions
 func (fc *FilterChain) RegisterDefaultFilters() {
 	fc.filterRegistry[models.IntentTypeCategory] = func(params map[string]interface{}) Filter {
-		category := ""
+		var categories []string
 		if c, ok := params["category"].(string); ok {
-			category = c
+			categories = []string{c}
+		} else if cats, ok := params["category"].([]string); ok {
+			categories = cats
 		}
-		return FilterByCategory(fc.articleRepo, category)
+		return FilterByCategory(fc.articleRepo, categories)
 	}
 	fc.filterRegistry[models.IntentTypeSource] = func(params map[string]interface{}) Filter {
 		source := ""
@@ -126,44 +126,70 @@ func (fc *FilterChain) Execute(intents []models.Intent, entities []string, locat
 		return fc.articleRepo.FindAll()
 	}
 
-	// Build filter chain from intents
 	var filters []Filter
 	if len(entities) > 0 {
 		filters = append(filters, FilterByTextSearch(fc.articleRepo, entities))
 	}
 
 	for _, intent := range intents {
-		// Add location to parameters if this is a nearby intent
-		params := intent.Parameters
-		if params == nil {
-			params = make(map[string]interface{})
-		}
-
-		// Add entities to parameters if this is a category intent
-		if intent.Type == models.IntentTypeCategory {
-			params["entities"] = entities
-		}
-
-		if intent.Type == models.IntentTypeNearby && location != nil {
-			params["latitude"] = location.Latitude
-			params["longitude"] = location.Longitude
-		}
-
-		// Get filter factory for this intent type
 		factory, exists := fc.filterRegistry[intent.Type]
 		if !exists {
-			fc.logger.Error("Filter factory not found for intent type", nil, map[string]interface{}{"intent": intent.Type})
+			fc.logger.Error("Unknown intent type", nil, map[string]interface{}{"intent": intent.Type})
 			continue
 		}
 
-		// Create filter from factory
+		// Convert intent.Values and location into params map for the factory
+		params := make(map[string]interface{})
+
+		switch intent.Type {
+		case models.IntentTypeCategory:
+			// Handle both single string and []string
+			if categories, ok := intent.Values.([]string); ok {
+				params["category"] = categories
+			} else if category, ok := intent.Values.(string); ok {
+				params["category"] = category
+			} else {
+				fc.logger.Error("Invalid category values", nil, map[string]interface{}{"intent": intent.Type})
+				continue
+			}
+		case models.IntentTypeSource:
+			if source, ok := intent.Values.(string); ok {
+				params["source"] = source
+			} else {
+				fc.logger.Error("Invalid source values", nil, map[string]interface{}{"intent": intent.Type})
+				continue
+			}
+		case models.IntentTypeNearby:
+			if location != nil {
+				params["latitude"] = location.Latitude
+				params["longitude"] = location.Longitude
+				params["radius"] = 50.0
+			} else {
+				fc.logger.Error("Location required for nearby intent", nil, map[string]interface{}{"intent": intent.Type})
+				continue
+			}
+		case models.IntentTypeScore:
+			if threshold, ok := intent.Values.(float64); ok {
+				params["threshold"] = threshold
+			} else if threshold, ok := intent.Values.(int); ok {
+				params["threshold"] = float64(threshold)
+			}
+		case models.EntityTypeSearch:
+			if query, ok := intent.Values.(string); ok {
+				params["query"] = query
+			} else if queries, ok := intent.Values.([]string); ok {
+				params["query"] = queries
+			} else if queries, ok := intent.Values.([]interface{}); ok {
+				params["query"] = queries
+			}
+		}
+
 		filter := factory(params)
 		filters = append(filters, filter)
 	}
 	filters = append(filters, FilterByScore(fc.articleRepo, 0.7))
-	fc.logger.Info("Filters", map[string]interface{}{"count": len(filters)})
+	fmt.Println("filters", filters)
 
-	// Execute the filter chain
 	ctx := context.Background()
 	pipeline := Chain(filters...)
 	var articles []models.Article

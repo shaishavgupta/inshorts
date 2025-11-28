@@ -59,11 +59,11 @@ func SetupRoutes(app *fiber.App, infraInstance *infra.Infrastructure, cfg *infra
 
 	// News routes
 	newsRoutes := apiV1.Group("v1/news")
-	newsRoutes.Post("/", ctrls.News.CreateArticle)
-	newsRoutes.Get("/query", ctrls.News.QueryNews)
-	newsRoutes.Get("/trending", ctrls.News.GetTrending)
-	newsRoutes.Get("/filter", ctrls.News.FilterArticles)
-	newsRoutes.Post("/load", ctrls.News.LoadData)
+	newsRoutes.Post("/", ctrls.Article.CreateArticle)
+	newsRoutes.Get("/query", ctrls.Article.QueryArticles)
+	newsRoutes.Get("/trending", ctrls.Article.GetTrending)
+	newsRoutes.Get("/filter", ctrls.Article.FilterArticles)
+	newsRoutes.Post("/load", ctrls.Article.LoadData)
 
 	// User interaction routes
 	interactionRoutes := apiV1.Group("v1/interactions")
