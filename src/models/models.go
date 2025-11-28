@@ -1,0 +1,138 @@
+package models
+
+import (
+	"encoding/json"
+	"time"
+)
+
+// Location represents geographic coordinates
+type Location struct {
+	Latitude  float64 `json:"latitude" validate:"required,min=-90,max=90"`
+	Longitude float64 `json:"longitude" validate:"required,min=-180,max=180"`
+}
+
+// Entity represents a named object extracted from text
+type Entity struct {
+	Type  string `json:"type" validate:"required,oneof=person organization location event"`
+	Value string `json:"value" validate:"required"`
+}
+
+// Intent represents the determined purpose or retrieval strategy for a user query
+type Intent struct {
+	Type       string                 `json:"type" validate:"required,oneof=category score search source nearby"`
+	Parameters map[string]interface{} `json:"parameters"`
+}
+
+// QueryAnalysis represents the result of LLM query processing
+type QueryAnalysis struct {
+	Entities []Entity `json:"entities"`
+	Intents  []Intent `json:"intents" validate:"required,min=1"`
+}
+
+// Article represents a news article stored in the database
+type Article struct {
+	ID              string    `json:"id" db:"id"`
+	Title           string    `json:"title" db:"title" validate:"required"`
+	Description     string    `json:"description" db:"description"`
+	URL             string    `json:"url" db:"url" validate:"required,url"`
+	PublicationDate time.Time `json:"publication_date" db:"publication_date" validate:"required"`
+	SourceName      string    `json:"source_name" db:"source_name" validate:"required"`
+	Category        []string  `json:"category" db:"category" validate:"required,min=1"`
+	RelevanceScore  float64   `json:"relevance_score" db:"relevance_score" validate:"required,min=0,max=1"`
+	Latitude        float64   `json:"latitude" db:"latitude" validate:"required,min=-90,max=90"`
+	Longitude       float64   `json:"longitude" db:"longitude" validate:"required,min=-180,max=180"`
+	Summary         string    `json:"summary" db:"summary"`
+}
+
+// UnmarshalJSON implements json.Unmarshaler for Article
+// It handles the custom time format "2006-01-02T15:04:05" (without timezone)
+func (a *Article) UnmarshalJSON(data []byte) error {
+	// Define a temporary struct with string for publication_date
+	type Alias Article
+	aux := &struct {
+		PublicationDate string `json:"publication_date"`
+		*Alias
+	}{
+		Alias: (*Alias)(a),
+	}
+
+	if err := json.Unmarshal(data, &aux); err != nil {
+		return err
+	}
+
+	// Parse the publication_date string in format "2006-01-02T15:04:05"
+	if aux.PublicationDate != "" {
+		parsedTime, err := time.Parse("2006-01-02T15:04:05", aux.PublicationDate)
+		if err != nil {
+			return err
+		}
+		a.PublicationDate = parsedTime
+	}
+
+	return nil
+}
+
+// EnrichedArticle extends Article with additional computed fields
+type EnrichedArticle struct {
+	Article
+	LLMSummary string  `json:"llm_summary"`
+	Distance   float64 `json:"distance,omitempty"` // Distance in kilometers for nearby queries
+}
+
+// UserEvent represents a user interaction with an article
+type UserEvent struct {
+	ID        string    `json:"id" db:"id"`
+	UserID    string    `json:"user_id" db:"user_id" validate:"required"`
+	ArticleID string    `json:"article_id" db:"article_id" validate:"required"`
+	EventType string    `json:"event_type" db:"event_type" validate:"required,oneof=view click"`
+	Timestamp time.Time `json:"timestamp" db:"timestamp" validate:"required"`
+	Latitude  float64   `json:"latitude" db:"latitude" validate:"required,min=-90,max=90"`
+	Longitude float64   `json:"longitude" db:"longitude" validate:"required,min=-180,max=180"`
+}
+
+// GetLocation returns the Location for a UserEvent
+func (ue *UserEvent) GetLocation() Location {
+	return Location{
+		Latitude:  ue.Latitude,
+		Longitude: ue.Longitude,
+	}
+}
+
+// GetLocation returns the Location for an Article
+func (a *Article) GetLocation() Location {
+	return Location{
+		Latitude:  a.Latitude,
+		Longitude: a.Longitude,
+	}
+}
+
+// HasIntent checks if QueryAnalysis contains a specific intent type
+func (qa *QueryAnalysis) HasIntent(intentType string) bool {
+	for _, intent := range qa.Intents {
+		if intent.Type == intentType {
+			return true
+		}
+	}
+	return false
+}
+
+// GetIntent retrieves the first intent of a specific type from QueryAnalysis
+func (qa *QueryAnalysis) GetIntent(intentType string) *Intent {
+	for i := range qa.Intents {
+		if qa.Intents[i].Type == intentType {
+			return &qa.Intents[i]
+		}
+	}
+	return nil
+}
+
+// GetEntitiesByType retrieves all entities of a specific type from QueryAnalysis
+func (qa *QueryAnalysis) GetEntitiesByType(entityType string) []Entity {
+	var result []Entity
+	for _, entity := range qa.Entities {
+		if entity.Type == entityType {
+			result = append(result, entity)
+		}
+	}
+	return result
+}

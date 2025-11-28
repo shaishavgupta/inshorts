@@ -1,0 +1,53 @@
+services:
+  # PostgreSQL database with PostGIS and pgvector extensions
+  postgres:
+    image: postgis/postgis:15-3.3
+    container_name: postgres
+    environment:
+      POSTGRES_DB: inshorts
+      POSTGRES_USER: postgres
+      POSTGRES_PASSWORD: root
+    ports:
+      - "5432:5432"
+    volumes:
+      # Mount init.sql for database initialization
+      - ./init.sql:/docker-entrypoint-initdb.d/init.sql
+      # Persist PostgreSQL data
+      - postgres_data:/var/lib/postgresql/data
+    healthcheck:
+      test: [ "CMD-SHELL", "pg_isready -U postgres -d inshorts" ]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+    networks:
+      - news-network
+
+  # Redis cache service
+  redis:
+    image: redis:7-alpine
+    container_name: redis
+    ports:
+      - "6379:6379"
+    volumes:
+      # Persist Redis data
+      - redis_data:/data
+    command: redis-server --appendonly yes
+    healthcheck:
+      test: [ "CMD", "redis-cli", "ping" ]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+    networks:
+      - news-network
+
+# Named volumes for data persistence
+volumes:
+  postgres_data:
+    driver: local
+  redis_data:
+    driver: local
+
+# Network for service communication
+networks:
+  news-network:
+    driver: bridge

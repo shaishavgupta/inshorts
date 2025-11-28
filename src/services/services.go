@@ -1,0 +1,49 @@
+package services
+
+import (
+	"news-inshorts/src/infra"
+	"news-inshorts/src/repositories"
+
+	"github.com/redis/go-redis/v9"
+	"gorm.io/gorm"
+)
+
+// Services holds all service instances
+type Services struct {
+	LLM         LLMService
+	Trending    TrendingService
+	News        NewsService
+	FilterChain *FilterChain
+	Repos       *repositories.Repositories
+}
+
+// NewServices creates and returns all service instances
+func NewServices(
+	cfg *infra.Config,
+	db *gorm.DB,
+	redisClient *redis.Client,
+) *Services {
+	// Initialize repositories
+	repos := repositories.NewRepositories(db)
+	infra.GetLogger().Info("Repositories initialized", nil)
+
+	// Initialize LLM service
+	llmService := NewLLMService(&cfg.LLM)
+
+	// Initialize filter chain with all filters
+	filterChain := NewFilterChainWithDefaults(repos.Article)
+
+	// Initialize trending service
+	trendingService := NewTrendingService(repos.UserEvent, redisClient, cfg.Cache.TTL)
+
+	// Initialize news service
+	newsService := NewNewsService(llmService, filterChain, trendingService, repos.Article)
+
+	return &Services{
+		LLM:         llmService,
+		Trending:    trendingService,
+		News:        newsService,
+		FilterChain: filterChain,
+		Repos:       repos,
+	}
+}
