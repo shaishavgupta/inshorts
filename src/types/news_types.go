@@ -6,15 +6,47 @@ import (
 	"news-inshorts/src/models"
 )
 
-// QueryNewsRequest represents the request body for POST /api/v1/news/query
+// QueryNewsRequest represents the query parameters for GET /api/v1/news/query
 type QueryNewsRequest struct {
-	Query    string           `json:"query" validate:"required"`
-	Location *models.Location `json:"location"`
+	Query    string           `query:"query" validate:"required"`
+	Lat      float64          `query:"lat" validate:"omitempty,min=-90,max=90"`
+	Lon      float64          `query:"lon" validate:"omitempty,min=-180,max=180"`
+	Location *models.Location `json:"-"` // Computed field, not from query params
+}
+
+func (r *QueryNewsRequest) Validate() error {
+	// Validate required fields
+	if r.Query == "" {
+		return fmt.Errorf("query parameter is required")
+	}
+
+	// Build Location object if lat/lon are provided
+	// Check if at least one is provided (non-zero)
+	hasLat := r.Lat != 0
+	hasLon := r.Lon != 0
+
+	if hasLat || hasLon {
+		// Both lat and lon must be provided together
+		if !hasLat || !hasLon {
+			return fmt.Errorf("both lat and lon must be provided together")
+		}
+		if r.Lat < -90 || r.Lat > 90 {
+			return fmt.Errorf("latitude must be between -90 and 90")
+		}
+		if r.Lon < -180 || r.Lon > 180 {
+			return fmt.Errorf("longitude must be between -180 and 180")
+		}
+		r.Location = &models.Location{
+			Latitude:  r.Lat,
+			Longitude: r.Lon,
+		}
+	}
+	return nil
 }
 
 // QueryNewsResponse represents the response for news query endpoint
 type QueryNewsResponse struct {
-	Articles []models.EnrichedArticle `json:"articles"`
+	Articles []models.Article `json:"articles"`
 }
 
 // LoadDataRequest represents the request body for POST /api/v1/news/load
@@ -57,4 +89,59 @@ func (r *FilterArticlesRequest) Validate() error {
 	}
 
 	return nil
+}
+
+// FilterArticlesResponse represents the response for the filter articles endpoint
+type FilterArticlesResponse struct {
+	Articles []models.Article `json:"articles"`
+}
+
+// CreateArticleRequest represents the request body for POST /api/v1/news
+type CreateArticleRequest struct {
+	Title           string   `json:"title" validate:"required"`
+	Description     string   `json:"description"`
+	URL             string   `json:"url" validate:"required,url"`
+	PublicationDate string   `json:"publication_date" validate:"required"`
+	SourceName      string   `json:"source_name" validate:"required"`
+	Category        []string `json:"category" validate:"required,min=1"`
+	RelevanceScore  float64  `json:"relevance_score" validate:"required,min=0,max=1"`
+	Latitude        float64  `json:"latitude" validate:"required,min=-90,max=90"`
+	Longitude       float64  `json:"longitude" validate:"required,min=-180,max=180"`
+	Summary         string   `json:"summary"`
+}
+
+// Validate validates the CreateArticleRequest
+func (r *CreateArticleRequest) Validate() error {
+	if r.Title == "" {
+		return fmt.Errorf("title is required")
+	}
+	if r.URL == "" {
+		return fmt.Errorf("url is required")
+	}
+	if r.SourceName == "" {
+		return fmt.Errorf("source_name is required")
+	}
+	if len(r.Category) == 0 {
+		return fmt.Errorf("at least one category is required")
+	}
+	if r.RelevanceScore < 0 || r.RelevanceScore > 1 {
+		return fmt.Errorf("relevance_score must be between 0 and 1")
+	}
+	if r.Latitude < -90 || r.Latitude > 90 {
+		return fmt.Errorf("latitude must be between -90 and 90")
+	}
+	if r.Longitude < -180 || r.Longitude > 180 {
+		return fmt.Errorf("longitude must be between -180 and 180")
+	}
+	if r.PublicationDate == "" {
+		return fmt.Errorf("publication_date is required")
+	}
+	return nil
+}
+
+// CreateArticleResponse represents the response for the create article endpoint
+type CreateArticleResponse struct {
+	Success bool           `json:"success"`
+	Message string         `json:"message"`
+	Article models.Article `json:"article"`
 }

@@ -31,7 +31,7 @@ func NewServices(
 	llmService := NewLLMService(&cfg.LLM)
 
 	// Initialize filter chain with all filters
-	filterChain := NewFilterChainWithDefaults(repos.Article)
+	filterChain := NewFilterChain(repos.Article)
 
 	// Initialize trending service
 	trendingService := NewTrendingService(repos.UserEvent, redisClient, cfg.Cache.TTL)

@@ -1,8 +1,9 @@
 package services
 
 import (
+	"encoding/json"
 	"fmt"
-	"math"
+	"os"
 	"sort"
 
 	"news-inshorts/src/infra"
@@ -13,9 +14,11 @@ import (
 
 // NewsService defines the interface for news operations
 type NewsService interface {
-	ProcessNewsQuery(query string, location *models.Location) ([]models.EnrichedArticle, error)
-	GetTrendingNews(lat, lon float64, limit int) ([]models.EnrichedArticle, error)
+	ProcessNewsQuery(query string, location *models.Location) ([]models.Article, error)
+	GetTrendingNews(lat, lon float64, limit int) ([]models.Article, error)
 	FilterArticles(params types.FilterArticlesRequest) ([]models.Article, error)
+	LoadFromJSON(filepath string) (*repositories.LoadStats, error)
+	CreateArticle(article *models.Article) error
 }
 
 // newsService implements NewsService
@@ -45,7 +48,7 @@ func NewNewsService(
 
 // ProcessNewsQuery orchestrates LLM query analysis and filter chain execution
 // to retrieve and enrich relevant news articles
-func (s *newsService) ProcessNewsQuery(query string, location *models.Location) ([]models.EnrichedArticle, error) {
+func (s *newsService) ProcessNewsQuery(query string, location *models.Location) ([]models.Article, error) {
 	// Step 1: Analyze query using LLM to extract intents and entities
 	analysis, err := s.llmService.ProcessQuery(query)
 	if err != nil {
@@ -55,127 +58,24 @@ func (s *newsService) ProcessNewsQuery(query string, location *models.Location) 
 		return nil, fmt.Errorf("failed to analyze query: %w", err)
 	}
 
-	s.logger.Debug("Query analysis completed", map[string]interface{}{
-		"entities_count": len(analysis.Entities),
-		"intents_count":  len(analysis.Intents),
-	})
-
-	// Step 2: Retrieve initial article set (all articles)
-	articles, err := s.articleRepo.FindAll()
-	if err != nil {
-		s.logger.Error("Failed to retrieve articles", err, nil)
-		return nil, fmt.Errorf("failed to retrieve articles: %w", err)
-	}
-
-	s.logger.Debug("Retrieved initial articles", map[string]interface{}{
-		"count": len(articles),
-	})
-
-	// Step 3: Execute filter chain with extracted intents
-	filteredArticles, err := s.filterChain.Execute(articles, analysis.Intents, location)
+	// Step 2: Execute filter chain with extracted intents
+	filteredArticles, err := s.filterChain.Execute(analysis.Intents, analysis.Entities, location)
 	if err != nil {
 		s.logger.Error("Failed to execute filter chain", err, nil)
 		return nil, fmt.Errorf("failed to filter articles: %w", err)
 	}
 
-	s.logger.Debug("Filter chain execution completed", map[string]interface{}{
-		"filtered_count": len(filteredArticles),
-	})
-
-	// Step 4: Limit results to top 5 articles
+	// Step 3: Limit results to top 5 articles
 	if len(filteredArticles) > 5 {
 		filteredArticles = filteredArticles[:5]
 	}
 
-	s.logger.Info("Query processing completed", map[string]interface{}{
-		"query":        query,
-		"result_count": len(filteredArticles),
-	})
-
-	// Step 5: Enrich articles with LLM summaries and distance information
-	enrichedArticles, err := s.enrichArticles(filteredArticles, location, analysis)
-	if err != nil {
-		s.logger.Error("Failed to enrich articles", err, nil)
-		return nil, fmt.Errorf("failed to enrich articles: %w", err)
-	}
-
-	return enrichedArticles, nil
-}
-
-// enrichArticles generates LLM summaries and adds distance information for articles
-func (s *newsService) enrichArticles(articles []models.Article, location *models.Location, analysis *models.QueryAnalysis) ([]models.EnrichedArticle, error) {
-	enrichedArticles := make([]models.EnrichedArticle, 0, len(articles))
-
-	// Check if query has nearby intent to determine if we need distance calculation
-	hasNearbyIntent := analysis.HasIntent("nearby")
-
-	for _, article := range articles {
-		enriched := models.EnrichedArticle{
-			Article: article,
-		}
-
-		// Generate LLM summary for the article
-		summary, err := s.llmService.GenerateSummary(article.Title, article.Description)
-		if err != nil {
-			// Handle summary generation errors gracefully by using empty string
-			s.logger.Warn("Failed to generate summary for article", map[string]interface{}{
-				"article_id": article.ID,
-				"title":      article.Title,
-				"error":      err.Error(),
-			})
-			enriched.LLMSummary = ""
-		} else {
-			enriched.LLMSummary = summary
-		}
-
-		// Add distance field for nearby queries
-		if hasNearbyIntent && location != nil {
-			distance := s.calculateDistance(
-				article.Latitude,
-				article.Longitude,
-				location.Latitude,
-				location.Longitude,
-			)
-			enriched.Distance = distance
-		}
-
-		enrichedArticles = append(enrichedArticles, enriched)
-	}
-
-	s.logger.Debug("Articles enriched", map[string]interface{}{
-		"count": len(enrichedArticles),
-	})
-
-	return enrichedArticles, nil
-}
-
-// calculateDistance computes the distance between two geographic coordinates using Haversine formula
-// Returns distance in kilometers
-func (s *newsService) calculateDistance(lat1, lon1, lat2, lon2 float64) float64 {
-	const earthRadiusKm = 6371.0
-
-	// Convert degrees to radians
-	lat1Rad := lat1 * math.Pi / 180.0
-	lon1Rad := lon1 * math.Pi / 180.0
-	lat2Rad := lat2 * math.Pi / 180.0
-	lon2Rad := lon2 * math.Pi / 180.0
-
-	// Haversine formula
-	dLat := lat2Rad - lat1Rad
-	dLon := lon2Rad - lon1Rad
-
-	a := math.Sin(dLat/2)*math.Sin(dLat/2) +
-		math.Cos(lat1Rad)*math.Cos(lat2Rad)*
-			math.Sin(dLon/2)*math.Sin(dLon/2)
-
-	c := 2 * math.Atan2(math.Sqrt(a), math.Sqrt(1-a))
-
-	return earthRadiusKm * c
+	return filteredArticles, nil
 }
 
 // GetTrendingNews retrieves trending articles based on location
 // Implements caching, trending score computation, and article enrichment
-func (s *newsService) GetTrendingNews(lat, lon float64, limit int) ([]models.EnrichedArticle, error) {
+func (s *newsService) GetTrendingNews(lat, lon float64, limit int) ([]models.Article, error) {
 	s.logger.Info("Getting trending news", map[string]interface{}{
 		"latitude":  lat,
 		"longitude": lon,
@@ -190,30 +90,7 @@ func (s *newsService) GetTrendingNews(lat, lon float64, limit int) ([]models.Enr
 	// Step 1: Check cache first
 	cachedArticles, found := s.trendingService.GetCachedTrending(lat, lon, limit)
 	if found {
-		s.logger.Debug("Returning cached trending articles", map[string]interface{}{
-			"count": len(cachedArticles),
-		})
-
-		// Enrich cached articles
-		enrichedArticles := make([]models.EnrichedArticle, 0, len(cachedArticles))
-		for _, article := range cachedArticles {
-			// Generate summary for each article
-			summary, err := s.llmService.GenerateSummary(article.Title, article.Description)
-			if err != nil {
-				s.logger.Warn("Failed to generate summary for cached article", map[string]interface{}{
-					"article_id": article.ID,
-					"error":      err.Error(),
-				})
-				summary = ""
-			}
-
-			enrichedArticles = append(enrichedArticles, models.EnrichedArticle{
-				Article:    article,
-				LLMSummary: summary,
-			})
-		}
-
-		return enrichedArticles, nil
+		return cachedArticles, nil
 	}
 
 	// Step 2: Cache miss - retrieve all articles
@@ -279,25 +156,7 @@ func (s *newsService) GetTrendingNews(lat, lon float64, limit int) ([]models.Enr
 		"count": len(trendingArticles),
 	})
 
-	// Step 7: Enrich articles with summaries
-	enrichedArticles := make([]models.EnrichedArticle, 0, len(trendingArticles))
-	for _, article := range trendingArticles {
-		summary, err := s.llmService.GenerateSummary(article.Title, article.Description)
-		if err != nil {
-			s.logger.Warn("Failed to generate summary for trending article", map[string]interface{}{
-				"article_id": article.ID,
-				"error":      err.Error(),
-			})
-			summary = ""
-		}
-
-		enrichedArticles = append(enrichedArticles, models.EnrichedArticle{
-			Article:    article,
-			LLMSummary: summary,
-		})
-	}
-
-	return enrichedArticles, nil
+	return trendingArticles, nil
 }
 
 // FilterArticles dynamically filters articles based on provided parameters
@@ -305,4 +164,140 @@ func (s *newsService) GetTrendingNews(lat, lon float64, limit int) ([]models.Enr
 // Multiple filters can be combined
 func (s *newsService) FilterArticles(params types.FilterArticlesRequest) ([]models.Article, error) {
 	return s.articleRepo.FilterArticles(params)
+}
+
+// LoadFromJSON loads articles from a JSON file, enriches them with LLM summaries, and inserts them into the database
+func (s *newsService) LoadFromJSON(filepath string) (*repositories.LoadStats, error) {
+	s.logger.Info("Starting to load articles from JSON", map[string]interface{}{
+		"filepath": filepath,
+	})
+
+	// Check if file exists
+	if _, err := os.Stat(filepath); os.IsNotExist(err) {
+		s.logger.Error("JSON file not found", err, map[string]interface{}{
+			"filepath": filepath,
+		})
+		return nil, fmt.Errorf("file not found: %s", filepath)
+	}
+
+	// Read the JSON file
+	file, err := os.Open(filepath)
+	if err != nil {
+		s.logger.Error("Failed to open JSON file", err, map[string]interface{}{
+			"filepath": filepath,
+		})
+		return nil, fmt.Errorf("failed to open JSON file: %w", err)
+	}
+	defer file.Close()
+
+	// Parse JSON
+	var articles []models.Article
+	decoder := json.NewDecoder(file)
+	if err := decoder.Decode(&articles); err != nil {
+		s.logger.Error("Failed to decode JSON", err, map[string]interface{}{
+			"filepath": filepath,
+		})
+		return nil, fmt.Errorf("failed to decode JSON: %w", err)
+	}
+
+	if len(articles) == 0 {
+		s.logger.Warn("No articles found in JSON file", map[string]interface{}{
+			"filepath": filepath,
+		})
+		return &repositories.LoadStats{
+			TotalArticles: 0,
+		}, nil
+	}
+
+	s.logger.Info("Parsed articles from JSON", map[string]interface{}{
+		"total": len(articles),
+	})
+
+	// Enrich each article with summary via LLM service
+	s.logger.Info("Enriching articles with LLM summaries", map[string]interface{}{
+		"total": len(articles),
+	})
+
+	for i := range articles {
+		summary, err := s.llmService.GenerateSummary(articles[i].Title, articles[i].Description)
+		if err != nil {
+			s.logger.Warn("Failed to generate summary for article", map[string]interface{}{
+				"index": i,
+				"title": articles[i].Title,
+				"error": err.Error(),
+			})
+			// Continue with empty summary if LLM fails
+			articles[i].Summary = ""
+		} else {
+			articles[i].Summary = summary
+		}
+
+		// Log progress every 50 articles
+		if (i+1)%50 == 0 {
+			s.logger.Info("Enrichment progress", map[string]interface{}{
+				"enriched": i + 1,
+				"total":    len(articles),
+			})
+		}
+	}
+
+	s.logger.Info("Completed enriching articles with summaries", map[string]interface{}{
+		"total": len(articles),
+	})
+
+	// Bulk insert articles into the database
+	stats, err := s.articleRepo.BulkInsert(articles)
+	if err != nil {
+		s.logger.Error("Failed to bulk insert articles", err, map[string]interface{}{
+			"filepath": filepath,
+		})
+		return stats, fmt.Errorf("failed to bulk insert articles: %w", err)
+	}
+
+	s.logger.Info("Completed loading articles from JSON", map[string]interface{}{
+		"filepath":      filepath,
+		"total":         stats.TotalArticles,
+		"success_count": stats.SuccessCount,
+		"error_count":   stats.ErrorCount,
+	})
+
+	return stats, nil
+}
+
+// CreateArticle creates a single article in the database
+// Optionally enriches it with an LLM-generated summary if summary is empty
+func (s *newsService) CreateArticle(article *models.Article) error {
+	s.logger.Info("Creating article", map[string]interface{}{
+		"title": article.Title,
+	})
+
+	// If summary is empty, generate one using LLM
+	if article.Summary == "" {
+		summary, err := s.llmService.GenerateSummary(article.Title, article.Description)
+		if err != nil {
+			s.logger.Warn("Failed to generate summary for article", map[string]interface{}{
+				"title": article.Title,
+				"error": err.Error(),
+			})
+			// Continue with empty summary if LLM fails
+			article.Summary = ""
+		} else {
+			article.Summary = summary
+		}
+	}
+
+	// Insert article into database
+	if err := s.articleRepo.Insert(article); err != nil {
+		s.logger.Error("Failed to create article", err, map[string]interface{}{
+			"title": article.Title,
+		})
+		return fmt.Errorf("failed to create article: %w", err)
+	}
+
+	s.logger.Info("Successfully created article", map[string]interface{}{
+		"id":    article.ID,
+		"title": article.Title,
+	})
+
+	return nil
 }

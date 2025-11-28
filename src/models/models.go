@@ -11,11 +11,14 @@ type Location struct {
 	Longitude float64 `json:"longitude" validate:"required,min=-180,max=180"`
 }
 
-// Entity represents a named object extracted from text
-type Entity struct {
-	Type  string `json:"type" validate:"required,oneof=person organization location event"`
-	Value string `json:"value" validate:"required"`
-}
+// Intent type constants
+const (
+	IntentTypeCategory = "category"
+	IntentTypeScore    = "score"
+	EntityTypeSearch   = "search"
+	IntentTypeSource   = "source"
+	IntentTypeNearby   = "nearby"
+)
 
 // Intent represents the determined purpose or retrieval strategy for a user query
 type Intent struct {
@@ -25,7 +28,7 @@ type Intent struct {
 
 // QueryAnalysis represents the result of LLM query processing
 type QueryAnalysis struct {
-	Entities []Entity `json:"entities"`
+	Entities []string `json:"entities"`
 	Intents  []Intent `json:"intents" validate:"required,min=1"`
 }
 
@@ -70,13 +73,6 @@ func (a *Article) UnmarshalJSON(data []byte) error {
 	}
 
 	return nil
-}
-
-// EnrichedArticle extends Article with additional computed fields
-type EnrichedArticle struct {
-	Article
-	LLMSummary string  `json:"llm_summary"`
-	Distance   float64 `json:"distance,omitempty"` // Distance in kilometers for nearby queries
 }
 
 // UserEvent represents a user interaction with an article
@@ -124,15 +120,4 @@ func (qa *QueryAnalysis) GetIntent(intentType string) *Intent {
 		}
 	}
 	return nil
-}
-
-// GetEntitiesByType retrieves all entities of a specific type from QueryAnalysis
-func (qa *QueryAnalysis) GetEntitiesByType(entityType string) []Entity {
-	var result []Entity
-	for _, entity := range qa.Entities {
-		if entity.Type == entityType {
-			result = append(result, entity)
-		}
-	}
-	return result
 }

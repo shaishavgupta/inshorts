@@ -130,30 +130,74 @@ func (s *llmService) GenerateSummary(title, description string) (string, error) 
 
 // buildQueryAnalysisPrompt creates the prompt for query analysis
 func (s *llmService) buildQueryAnalysisPrompt(query string) string {
-	return fmt.Sprintf(`Analyze the following news query and extract:
-1. Entities (people, organizations, locations, events)
-2. Intents (category, score, search, source, nearby)
-3. Parameters for each intent
+	return fmt.Sprintf(`You are an entity and intent extraction model for a news retrieval backend.
 
-Query: %s
+Analyze the user's query and return ONLY a valid JSON object with this schema:
 
-Return ONLY valid JSON in this exact format (no additional text):
 {
-    "entities": [{"type": "person", "value": "Name"}],
-    "intents": [
-        {"type": "search", "parameters": {"query": "search terms"}},
-        {"type": "category", "parameters": {"category": "Technology"}},
-        {"type": "source", "parameters": {"source": "Source Name"}},
-        {"type": "score", "parameters": {"threshold": 0.7}},
-        {"type": "nearby", "parameters": {"location": "City Name"}}
-    ]
+  "entities": [],        // list of entity names as strings (people, organizations, places, events)
+  "intent": {
+    "category": {
+      "values": []      // list of news categories/topics to search for
+    },
+    "source": {
+      "values": []      // list of news sources/publishers to consider
+    },
+    "nearby": {
+      "lat": null,      // latitude if location intent exists, else null
+      "lon": null       // longitude if location intent exists, else null
+    }
+  }
 }
 
-Valid intent types: category, score, search, source, nearby
-Valid entity types: person, organization, location, event
-Valid categories: Technology, Business, Sports, General, Politics, Entertainment, Health, Science
+### Rules:
+- Extract ALL important named entities into entities[] as plain strings.
+  (Examples: people, publishers, companies, places, events like acquisition, war, election, etc.)
+- If the user asks for specific news topics like Technology, Sports, Business, etc., put them in category.values.
+- If the user mentions specific publishers/sources, put them in source.values.
+- If the user asks for news “near/around a location” or “near me”, classify geo intent and include the place name inside entities[], but do NOT generate coordinates.
+  If coordinates are already given by the user, copy them into nearby.lat and nearby.lon.
+- If no intent is present for a key, keep the list empty or null values instead of removing the field.
+- Do NOT add explanations, code blocks, or extra text outside JSON.
 
-If no specific intent is clear, use "search" with the query terms.`, query)
+### Examples (strict format):
+Input: "Latest updates on AI companies like OpenAI and Google near Delhi"
+Output:
+{
+  "entities": ["OpenAI", "Google", "Delhi", "AI companies"],
+  "intent": {
+    "category": { "values": ["technology", "artificial intelligence"] },
+    "source": { "values": [] },
+    "nearby": { "lat": null, "lon": null }
+  }
+}
+
+Input: "Breaking sports news near me"
+Output:
+{
+  "entities": ["sports", "near me"],
+  "intent": {
+    "category": { "values": ["sports"] },
+    "source": { "values": [] },
+    "nearby": { "lat": null, "lon": null }
+  }
+}
+
+Input: "Top tech news from Reuters and DW"
+Output:
+{
+  "entities": ["Reuters", "DW", "tech news"],
+  "intent": {
+    "category": { "values": ["technology"] },
+    "source": { "values": ["Reuters", "DW"] },
+    "nearby": { "lat": null, "lon": null }
+  }
+}
+
+Now analyze the following query:
+
+Input: "%s"
+`, query)
 }
 
 // buildSummaryPrompt creates the prompt for article summarization
@@ -228,9 +272,27 @@ func (s *llmService) callOpenAI(prompt string, maxTokens int) (string, error) {
 	return apiResp.Choices[0].Message.Content, nil
 }
 
+// llmQueryResponse represents the raw JSON response structure from LLM
+// This is a temporary structure used only for parsing the LLM JSON response
+type llmQueryResponse struct {
+	Entities []string `json:"entities"`
+	Intent   struct {
+		Category struct {
+			Values []string `json:"values"`
+		} `json:"category"`
+		Source struct {
+			Values []string `json:"values"`
+		} `json:"source"`
+		Nearby struct {
+			Lat *float64 `json:"lat"`
+			Lon *float64 `json:"lon"`
+		} `json:"nearby"`
+	} `json:"intent"`
+}
+
 // parseQueryAnalysis parses the LLM response into QueryAnalysis
 func (s *llmService) parseQueryAnalysis(response string) (*models.QueryAnalysis, error) {
-	var analysis models.QueryAnalysis
+	var llmResp llmQueryResponse
 
 	// Try to extract JSON from the response (in case LLM adds extra text)
 	startIdx := bytes.IndexByte([]byte(response), '{')
@@ -242,27 +304,47 @@ func (s *llmService) parseQueryAnalysis(response string) (*models.QueryAnalysis,
 
 	jsonStr := response[startIdx : endIdx+1]
 
-	if err := json.Unmarshal([]byte(jsonStr), &analysis); err != nil {
+	if err := json.Unmarshal([]byte(jsonStr), &llmResp); err != nil {
 		return nil, fmt.Errorf("failed to unmarshal JSON: %w", err)
 	}
 
-	// Ensure at least one intent exists
-	if len(analysis.Intents) == 0 {
-		// Default to search intent if none provided
-		analysis.Intents = []models.Intent{
-			{
-				Type: "search",
-				Parameters: map[string]interface{}{
-					"query": "general news",
-				},
+	// Convert LLM response to QueryAnalysis model
+	analysis := &models.QueryAnalysis{
+		Entities: llmResp.Entities,
+		Intents:  make([]models.Intent, 0),
+	}
+
+	// Convert intent structure to Intent array
+	// Category intent
+	if len(llmResp.Intent.Category.Values) > 0 {
+		analysis.Intents = append(analysis.Intents, models.Intent{
+			Type: models.IntentTypeCategory,
+			Parameters: map[string]interface{}{
+				"values": llmResp.Intent.Category.Values,
 			},
-		}
+		})
 	}
 
-	// Initialize empty slices if nil
-	if analysis.Entities == nil {
-		analysis.Entities = []models.Entity{}
+	// Source intent
+	if len(llmResp.Intent.Source.Values) > 0 {
+		analysis.Intents = append(analysis.Intents, models.Intent{
+			Type: models.IntentTypeSource,
+			Parameters: map[string]interface{}{
+				"values": llmResp.Intent.Source.Values,
+			},
+		})
 	}
 
-	return &analysis, nil
+	// Nearby intent
+	if llmResp.Intent.Nearby.Lat != nil && llmResp.Intent.Nearby.Lon != nil {
+		analysis.Intents = append(analysis.Intents, models.Intent{
+			Type: models.IntentTypeNearby,
+			Parameters: map[string]interface{}{
+				"lat": *llmResp.Intent.Nearby.Lat,
+				"lon": *llmResp.Intent.Nearby.Lon,
+			},
+		})
+	}
+
+	return analysis, nil
 }

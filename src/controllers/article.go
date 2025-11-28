@@ -1,7 +1,10 @@
 package controllers
 
 import (
+	"time"
+
 	"news-inshorts/src/infra"
+	"news-inshorts/src/models"
 	"news-inshorts/src/repositories"
 	"news-inshorts/src/services"
 	"news-inshorts/src/types"
@@ -25,54 +28,28 @@ func NewNewsController(newsService services.NewsService, articleRepo repositorie
 	}
 }
 
-// QueryNews handles POST /api/v1/news/query
+// QueryNews handles GET /api/v1/news/query
 // Processes natural language queries and returns relevant news articles
 func (nc *NewsController) QueryNews(c *fiber.Ctx) error {
 	var req types.QueryNewsRequest
 
-	// Parse and validate request body
-	if err := c.BodyParser(&req); err != nil {
-		nc.logger.Error("Failed to parse request body", err, map[string]interface{}{
-			"path": c.Path(),
-		})
+	// Parse and validate query parameters
+	if err := c.QueryParser(&req); err != nil {
 		return c.Status(fiber.StatusBadRequest).JSON(fiber.Map{
-			"error": "Invalid request body",
+			"error": "Invalid query parameters",
 		})
 	}
 
-	// Validate required fields
-	if req.Query == "" {
+	// Validate request using struct validation
+	if err := req.Validate(); err != nil {
 		return c.Status(fiber.StatusBadRequest).JSON(fiber.Map{
-			"error": "Query field is required",
+			"error": err.Error(),
 		})
 	}
-
-	// Validate location if provided
-	if req.Location != nil {
-		if req.Location.Latitude < -90 || req.Location.Latitude > 90 {
-			return c.Status(fiber.StatusBadRequest).JSON(fiber.Map{
-				"error": "Latitude must be between -90 and 90",
-			})
-		}
-		if req.Location.Longitude < -180 || req.Location.Longitude > 180 {
-			return c.Status(fiber.StatusBadRequest).JSON(fiber.Map{
-				"error": "Longitude must be between -180 and 180",
-			})
-		}
-	}
-
-	nc.logger.Info("Processing news query request", map[string]interface{}{
-		"query":        req.Query,
-		"has_location": req.Location != nil,
-	})
 
 	// Call NewsService to process the query
 	articles, err := nc.newsService.ProcessNewsQuery(req.Query, req.Location)
 	if err != nil {
-		nc.logger.Error("Failed to process news query", err, map[string]interface{}{
-			"query": req.Query,
-		})
-
 		// Return appropriate error status
 		return c.Status(fiber.StatusInternalServerError).JSON(fiber.Map{
 			"error": "Failed to process query",
@@ -83,11 +60,6 @@ func (nc *NewsController) QueryNews(c *fiber.Ctx) error {
 	response := types.QueryNewsResponse{
 		Articles: articles,
 	}
-
-	nc.logger.Info("News query processed successfully", map[string]interface{}{
-		"query":         req.Query,
-		"article_count": len(articles),
-	})
 
 	return c.Status(fiber.StatusOK).JSON(response)
 }
@@ -125,21 +97,9 @@ func (nc *NewsController) GetTrending(c *fiber.Ctx) error {
 		limit = 100 // Cap at 100 articles
 	}
 
-	nc.logger.Info("Processing trending news request", map[string]interface{}{
-		"latitude":  lat,
-		"longitude": lon,
-		"limit":     limit,
-	})
-
 	// Call NewsService to get trending news
 	articles, err := nc.newsService.GetTrendingNews(lat, lon, limit)
 	if err != nil {
-		nc.logger.Error("Failed to get trending news", err, map[string]interface{}{
-			"latitude":  lat,
-			"longitude": lon,
-			"limit":     limit,
-		})
-
 		return c.Status(fiber.StatusInternalServerError).JSON(fiber.Map{
 			"error": "Failed to retrieve trending news",
 		})
@@ -149,13 +109,6 @@ func (nc *NewsController) GetTrending(c *fiber.Ctx) error {
 	response := types.QueryNewsResponse{
 		Articles: articles,
 	}
-
-	nc.logger.Info("Trending news retrieved successfully", map[string]interface{}{
-		"latitude":      lat,
-		"longitude":     lon,
-		"limit":         limit,
-		"article_count": len(articles),
-	})
 
 	return c.Status(fiber.StatusOK).JSON(response)
 }
@@ -168,9 +121,6 @@ func (nc *NewsController) FilterArticles(c *fiber.Ctx) error {
 
 	// Parse query parameters into struct
 	if err := c.QueryParser(&req); err != nil {
-		nc.logger.Error("Failed to parse query parameters", err, map[string]interface{}{
-			"path": c.Path(),
-		})
 		return c.Status(fiber.StatusBadRequest).JSON(fiber.Map{
 			"error": "Invalid query parameters",
 		})
@@ -178,9 +128,6 @@ func (nc *NewsController) FilterArticles(c *fiber.Ctx) error {
 
 	// Validate request using struct validation
 	if err := req.Validate(); err != nil {
-		nc.logger.Error("Validation failed", err, map[string]interface{}{
-			"path": c.Path(),
-		})
 		return c.Status(fiber.StatusBadRequest).JSON(fiber.Map{
 			"error": err.Error(),
 		})
@@ -189,16 +136,14 @@ func (nc *NewsController) FilterArticles(c *fiber.Ctx) error {
 	// Call NewsService to filter articles
 	articles, err := nc.newsService.FilterArticles(req)
 	if err != nil {
-		nc.logger.Error("Failed to filter articles", err, map[string]interface{}{
-			"query": req,
-		})
-
 		return c.Status(fiber.StatusInternalServerError).JSON(fiber.Map{
 			"error": "Failed to filter articles",
 		})
 	}
 
-	return c.Status(fiber.StatusOK).JSON(articles)
+	return c.Status(fiber.StatusOK).JSON(types.FilterArticlesResponse{
+		Articles: articles,
+	})
 }
 
 // LoadData handles POST /api/v1/news/load
@@ -208,9 +153,6 @@ func (nc *NewsController) LoadData(c *fiber.Ctx) error {
 
 	// Parse and validate request body
 	if err := c.BodyParser(&req); err != nil {
-		nc.logger.Error("Failed to parse request body", err, map[string]interface{}{
-			"path": c.Path(),
-		})
 		return c.Status(fiber.StatusBadRequest).JSON(fiber.Map{
 			"error": "Invalid request body",
 		})
@@ -223,13 +165,9 @@ func (nc *NewsController) LoadData(c *fiber.Ctx) error {
 		})
 	}
 
-	// Call ArticleRepository to load data
-	stats, err := nc.articleRepo.LoadFromJSON(req.Filepath)
+	// Call NewsService to load data
+	stats, err := nc.newsService.LoadFromJSON(req.Filepath)
 	if err != nil {
-		nc.logger.Error("Failed to load data from JSON", err, map[string]interface{}{
-			"filepath": req.Filepath,
-		})
-
 		// If we have stats with validation errors, return them
 		if stats != nil && len(stats.ValidationErrors) > 0 {
 			response := types.LoadDataResponse{
@@ -248,13 +186,6 @@ func (nc *NewsController) LoadData(c *fiber.Ctx) error {
 		})
 	}
 
-	nc.logger.Info("Data loaded successfully via API", map[string]interface{}{
-		"filepath":      req.Filepath,
-		"total":         stats.TotalArticles,
-		"success_count": stats.SuccessCount,
-		"error_count":   stats.ErrorCount,
-	})
-
 	// Return success response with statistics
 	response := types.LoadDataResponse{
 		Success:       true,
@@ -265,4 +196,62 @@ func (nc *NewsController) LoadData(c *fiber.Ctx) error {
 	}
 
 	return c.Status(fiber.StatusOK).JSON(response)
+}
+
+// CreateArticle handles POST /api/v1/news
+// Creates a new article from the request payload
+func (nc *NewsController) CreateArticle(c *fiber.Ctx) error {
+	var req types.CreateArticleRequest
+
+	// Parse and validate request body
+	if err := c.BodyParser(&req); err != nil {
+		return c.Status(fiber.StatusBadRequest).JSON(fiber.Map{
+			"error": "Invalid request body",
+		})
+	}
+
+	// Validate request using struct validation
+	if err := req.Validate(); err != nil {
+		return c.Status(fiber.StatusBadRequest).JSON(fiber.Map{
+			"error": err.Error(),
+		})
+	}
+
+	// Parse publication date
+	publicationDate, err := time.Parse("2006-01-02T15:04:05", req.PublicationDate)
+	if err != nil {
+		return c.Status(fiber.StatusBadRequest).JSON(fiber.Map{
+			"error": "Invalid publication_date format. Expected format: 2006-01-02T15:04:05",
+		})
+	}
+
+	// Create article model from request
+	article := &models.Article{
+		Title:           req.Title,
+		Description:     req.Description,
+		URL:             req.URL,
+		PublicationDate: publicationDate,
+		SourceName:      req.SourceName,
+		Category:        req.Category,
+		RelevanceScore:  req.RelevanceScore,
+		Latitude:        req.Latitude,
+		Longitude:       req.Longitude,
+		Summary:         req.Summary,
+	}
+
+	// Call NewsService to create the article
+	if err := nc.newsService.CreateArticle(article); err != nil {
+		return c.Status(fiber.StatusInternalServerError).JSON(fiber.Map{
+			"error": "Failed to create article",
+		})
+	}
+
+	// Return success response with created article
+	response := types.CreateArticleResponse{
+		Success: true,
+		Message: "Article created successfully",
+		Article: *article,
+	}
+
+	return c.Status(fiber.StatusCreated).JSON(response)
 }

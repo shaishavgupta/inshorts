@@ -1,14 +1,12 @@
 package repositories
 
 import (
-	"encoding/json"
 	"fmt"
-	"os"
+	"strings"
 
 	"news-inshorts/src/infra"
 	"news-inshorts/src/models"
 	"news-inshorts/src/types"
-	"news-inshorts/src/utils"
 
 	"github.com/lib/pq"
 	"gorm.io/gorm"
@@ -24,11 +22,13 @@ type LoadStats struct {
 
 // ArticleRepository defines the interface for article data access
 type ArticleRepository interface {
-	LoadFromJSON(filepath string) (*LoadStats, error)
+	BulkInsert(articles []models.Article) (*LoadStats, error)
+	Insert(article *models.Article) error
 	FindAll() ([]models.Article, error)
 	FindByScoreThreshold(threshold float64) ([]models.Article, error)
-	SearchByText(query string) ([]models.Article, error)
+	SearchByText(query []string) ([]models.Article, error)
 	FilterArticles(params types.FilterArticlesRequest) ([]models.Article, error)
+	FindByIDs(ids []string) ([]models.Article, error)
 }
 
 // articleRepository implements ArticleRepository
@@ -76,6 +76,7 @@ func (r *articleRepository) FindAll() ([]models.Article, error) {
 	return articles, nil
 }
 
+// FilterArticles filters articles based on category, source, and/or location
 func (r *articleRepository) FilterArticles(params types.FilterArticlesRequest) ([]models.Article, error) {
 	query := `
 		SELECT
@@ -91,30 +92,101 @@ func (r *articleRepository) FilterArticles(params types.FilterArticlesRequest) (
 			longitude,
 			summary
 		FROM articles
-		WHERE
 	`
 
+	var conditions []string
+
 	if params.Category != "" {
-		query += fmt.Sprintf(`  '%s' = ANY(category) AND`, params.Category)
+		cats := strings.Split(params.Category, ",")
+		quoted := make([]string, len(cats))
+		for i, c := range cats {
+			quoted[i] = fmt.Sprintf("'%s'", strings.ReplaceAll(c, "'", "''"))
+		}
+		conditions = append(conditions, fmt.Sprintf(`category @> ARRAY[%s]`, strings.Join(quoted, ",")))
 	}
 
 	if params.Source != "" {
-		query += fmt.Sprintf(` source_name = '%s' AND`, params.Source)
+		// Escape single quotes in source name
+		escapedSource := strings.ReplaceAll(params.Source, "'", "''")
+		conditions = append(conditions, fmt.Sprintf(`source_name = '%s'`, escapedSource))
 	}
 
 	if params.Lat != 0 && params.Lon != 0 {
-		query += fmt.Sprintf(` latitude = %f AND longitude = %f`, params.Lat, params.Lon)
+		if params.Radius > 0 {
+			// Use PostGIS for radius-based filtering
+			conditions = append(conditions, fmt.Sprintf(`ST_DWithin(
+				ST_SetSRID(ST_MakePoint(longitude, latitude), 4326)::geography,
+				ST_SetSRID(ST_MakePoint(%f, %f), 4326)::geography,
+				%f * 1000
+			)`, params.Lon, params.Lat, params.Radius))
+		} else {
+			// Exact location match
+			conditions = append(conditions, fmt.Sprintf(`latitude = %f AND longitude = %f`, params.Lat, params.Lon))
+		}
 	}
 
-	query = utils.RemoveTrailingAnd(query)
+	if len(conditions) > 0 {
+		query += " WHERE " + strings.Join(conditions, " AND ")
+	}
+
+	var orderBy string
+	if params.Lat != 0 && params.Lon != 0 && params.Radius > 0 {
+		// Order by distance when using radius
+		orderBy = fmt.Sprintf(`ST_Distance(
+			ST_SetSRID(ST_MakePoint(longitude, latitude), 4326)::geography,
+			ST_SetSRID(ST_MakePoint(%f, %f), 4326)::geography
+		) ASC`, params.Lon, params.Lat)
+	} else {
+		orderBy = "publication_date DESC"
+	}
 
 	var articles []models.Article
-	if err := r.db.Raw(query).Order("publication_date DESC").Scan(&articles).Error; err != nil {
+	if err := r.db.Raw(query).Order(orderBy).Scan(&articles).Error; err != nil {
 		r.log.Error("Failed to query articles", err, map[string]interface{}{
 			"query": query,
 		})
 		return nil, fmt.Errorf("failed to query articles: %w", err)
 	}
+
+	return articles, nil
+}
+
+// FindByIDs retrieves articles by their IDs
+func (r *articleRepository) FindByIDs(ids []string) ([]models.Article, error) {
+	if len(ids) == 0 {
+		return []models.Article{}, nil
+	}
+
+	query := `
+		SELECT
+			id,
+			title,
+			description,
+			url,
+			publication_date,
+			source_name,
+			category,
+			relevance_score,
+			latitude,
+			longitude,
+			summary
+		FROM articles
+		WHERE id = ANY(?)
+		ORDER BY publication_date DESC
+	`
+
+	var articles []models.Article
+	if err := r.db.Raw(query, pq.Array(ids)).Scan(&articles).Error; err != nil {
+		r.log.Error("Failed to query articles by IDs", err, map[string]interface{}{
+			"ids_count": len(ids),
+		})
+		return nil, fmt.Errorf("failed to query articles by IDs: %w", err)
+	}
+
+	r.log.Info("Retrieved articles by IDs", map[string]interface{}{
+		"requested_count": len(ids),
+		"found_count":     len(articles),
+	})
 
 	return articles, nil
 }
@@ -155,10 +227,24 @@ func (r *articleRepository) FindByScoreThreshold(threshold float64) ([]models.Ar
 }
 
 // SearchByText performs text search on article titles and descriptions
-func (r *articleRepository) SearchByText(query string) ([]models.Article, error) {
+func (r *articleRepository) SearchByText(query []string) ([]models.Article, error) {
 	// Uses simple text search with ILIKE for pattern matching
+	if len(query) == 0 {
+		return []models.Article{}, nil
+	}
 
-	sqlQuery := `
+	// Build WHERE clause with OR conditions for each query term
+	var conditions []string
+	var args []interface{}
+
+	for _, term := range query {
+		conditions = append(conditions, "(title ILIKE '%' || ? || '%' OR description ILIKE '%' || ? || '%')")
+		args = append(args, term, term)
+	}
+
+	whereClause := strings.Join(conditions, " OR ")
+
+	sqlQuery := fmt.Sprintf(`
 		SELECT
 			id,
 			title,
@@ -171,16 +257,14 @@ func (r *articleRepository) SearchByText(query string) ([]models.Article, error)
 			latitude,
 			longitude
 		FROM articles
-		WHERE
-			title ILIKE '%' || ? || '%'
-			OR description ILIKE '%' || ? || '%'
+		WHERE %s
 		ORDER BY
 			relevance_score DESC,
 			publication_date DESC
-	`
+	`, whereClause)
 
 	var articles []models.Article
-	if err := r.db.Raw(sqlQuery, query, query).Scan(&articles).Error; err != nil {
+	if err := r.db.Raw(sqlQuery, args...).Scan(&articles).Error; err != nil {
 		r.log.Error("Failed to search articles by text", err, map[string]interface{}{
 			"query": query,
 		})
@@ -239,52 +323,21 @@ func (r *articleRepository) validateArticle(article *models.Article, index int) 
 	return errors
 }
 
-// LoadFromJSON loads articles from a JSON file and inserts them into the database
-func (r *articleRepository) LoadFromJSON(filepath string) (*LoadStats, error) {
+// BulkInsert inserts multiple articles into the database in a single transaction
+func (r *articleRepository) BulkInsert(articles []models.Article) (*LoadStats, error) {
 	stats := &LoadStats{
+		TotalArticles:    len(articles),
 		ValidationErrors: []string{},
 	}
 
-	r.log.Info("Starting to load articles from JSON", map[string]interface{}{
-		"filepath": filepath,
-	})
-
-	// Check if file exists
-	if _, err := os.Stat(filepath); os.IsNotExist(err) {
-		r.log.Error("JSON file not found", err, map[string]interface{}{
-			"filepath": filepath,
-		})
-		return nil, fmt.Errorf("file not found: %s", filepath)
-	}
-
-	// Read the JSON file
-	file, err := os.Open(filepath)
-	if err != nil {
-		r.log.Error("Failed to open JSON file", err, map[string]interface{}{
-			"filepath": filepath,
-		})
-		return nil, fmt.Errorf("failed to open JSON file: %w", err)
-	}
-	defer file.Close()
-
-	// Parse JSON
-	var articles []models.Article
-	decoder := json.NewDecoder(file)
-	if err := decoder.Decode(&articles); err != nil {
-		r.log.Error("Failed to decode JSON", err, map[string]interface{}{
-			"filepath": filepath,
-		})
-		return nil, fmt.Errorf("failed to decode JSON: %w", err)
-	}
-
-	stats.TotalArticles = len(articles)
-
 	if len(articles) == 0 {
-		r.log.Warn("No articles found in JSON file", map[string]interface{}{
-			"filepath": filepath,
-		})
+		r.log.Warn("No articles provided for bulk insert", nil)
 		return stats, nil
 	}
+
+	r.log.Info("Starting bulk insert of articles", map[string]interface{}{
+		"total": len(articles),
+	})
 
 	// Validate all articles first
 	r.log.Info("Validating article structures", map[string]interface{}{
@@ -316,7 +369,7 @@ func (r *articleRepository) LoadFromJSON(filepath string) (*LoadStats, error) {
 		}
 	}()
 
-	// Prepare insert statement
+	// Prepare insert statement with summary field
 	insertQuery := `
 		INSERT INTO articles (
 			id,
@@ -328,9 +381,11 @@ func (r *articleRepository) LoadFromJSON(filepath string) (*LoadStats, error) {
 			category,
 			relevance_score,
 			latitude,
-			longitude
+			longitude,
+			summary
 		) VALUES (
 			COALESCE(?::uuid, uuid_generate_v4()),
+			?,
 			?,
 			?,
 			?,
@@ -348,7 +403,6 @@ func (r *articleRepository) LoadFromJSON(filepath string) (*LoadStats, error) {
 
 	// Insert articles in batches
 	for i, article := range articles {
-
 		if err := tx.Exec(insertQuery,
 			article.ID,
 			article.Title,
@@ -360,6 +414,7 @@ func (r *articleRepository) LoadFromJSON(filepath string) (*LoadStats, error) {
 			article.RelevanceScore,
 			article.Latitude,
 			article.Longitude,
+			article.Summary,
 		).Error; err != nil {
 			errorCount++
 			r.log.Error("Failed to insert article", err, map[string]interface{}{
@@ -373,7 +428,7 @@ func (r *articleRepository) LoadFromJSON(filepath string) (*LoadStats, error) {
 
 		// Log progress every 100 articles
 		if (i+1)%100 == 0 {
-			r.log.Info("Loading progress", map[string]interface{}{
+			r.log.Info("Bulk insert progress", map[string]interface{}{
 				"loaded": i + 1,
 				"total":  len(articles),
 			})
@@ -389,12 +444,84 @@ func (r *articleRepository) LoadFromJSON(filepath string) (*LoadStats, error) {
 	stats.SuccessCount = successCount
 	stats.ErrorCount = errorCount
 
-	r.log.Info("Completed loading articles from JSON", map[string]interface{}{
-		"filepath":      filepath,
+	r.log.Info("Completed bulk insert of articles", map[string]interface{}{
 		"total":         len(articles),
 		"success_count": successCount,
 		"error_count":   errorCount,
 	})
 
 	return stats, nil
+}
+
+// Insert inserts a single article into the database
+func (r *articleRepository) Insert(article *models.Article) error {
+	// Validate article
+	validationErrors := r.validateArticle(article, 0)
+	if len(validationErrors) > 0 {
+		r.log.Error("Validation failed for article", nil, map[string]interface{}{
+			"errors": validationErrors,
+		})
+		return fmt.Errorf("validation failed: %v", validationErrors)
+	}
+
+	// Prepare insert statement with summary field
+	insertQuery := `
+		INSERT INTO articles (
+			id,
+			title,
+			description,
+			url,
+			publication_date,
+			source_name,
+			category,
+			relevance_score,
+			latitude,
+			longitude,
+			summary
+		) VALUES (
+			COALESCE(?::uuid, uuid_generate_v4()),
+			?,
+			?,
+			?,
+			?,
+			?,
+			?,
+			?,
+			?,
+			?,
+			?
+		) RETURNING id;
+	`
+
+	var insertedID string
+	if err := r.db.Raw(insertQuery,
+		article.ID,
+		article.Title,
+		article.Description,
+		article.URL,
+		article.PublicationDate,
+		article.SourceName,
+		pq.Array(article.Category),
+		article.RelevanceScore,
+		article.Latitude,
+		article.Longitude,
+		article.Summary,
+	).Scan(&insertedID).Error; err != nil {
+		r.log.Error("Failed to insert article", err, map[string]interface{}{
+			"title": article.Title,
+		})
+		return fmt.Errorf("failed to insert article: %w", err)
+	}
+
+	// Update article ID if it was generated
+	if article.ID == "" {
+		article.ID = insertedID
+	}
+
+	r.log.Info("Successfully inserted article", map[string]interface{}{
+		"id":    article.ID,
+		"title": article.Title,
+	})
+
+	return nil
 }
