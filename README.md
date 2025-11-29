@@ -21,271 +21,17 @@ The application follows a three-layer architecture:
 - **Service Layer**: Implements business logic and orchestrates operations
 - **Repository Layer**: Manages database interactions
 
-## Coding Patterns
-
-This codebase implements several well-established design patterns and architectural principles:
-
-### 1. **Layered Architecture (Separation of Concerns)**
-
-The application is organized into distinct layers with clear responsibilities:
-
-- **Controllers** (`src/controllers/`): Handle HTTP requests, validate input, and format responses
-- **Services** (`src/services/`): Implement business logic and orchestrate operations
-- **Repositories** (`src/repositories/`): Abstract database operations and data access
-- **Models** (`src/models/`): Define domain entities and data structures
-- **Types** (`src/types/`): Define request/response DTOs with validation
-
-### 2. **Dependency Injection**
-
-All dependencies are injected through constructors, promoting testability and loose coupling:
-
-```go
-// Example: Service receives dependencies via constructor
-func NewArticleService(
-    llmService LLMService,
-    filterChain *FilterChain,
-    trendingService TrendingService,
-    articleRepo repositories.ArticleRepository,
-) ArticleService
-```
-
-**Benefits:**
-- Easy to mock dependencies for testing
-- Clear dependency relationships
-- Flexible component replacement
-
-### 3. **Interface-Based Design**
-
-Services and repositories use interfaces to define contracts:
-
-```go
-// Service interface
-type ArticleService interface {
-    ProcessArticleQuery(query string, location *models.Location) ([]models.Article, error)
-    GetTrendingNews(lat, lon float64, limit int) ([]models.Article, error)
-    // ...
-}
-```
-
-**Benefits:**
-- Enables polymorphism and easy testing
-- Allows multiple implementations
-- Reduces coupling between layers
-
-### 4. **Factory Pattern**
-
-Used for creating filters dynamically based on intent types:
-
-```go
-// FilterFactory creates filters from intent parameters
-type FilterFactory func(params map[string]interface{}) Filter
-
-// Registry maps intent types to factories
-filterRegistry map[string]FilterFactory
-```
-
-**Usage:** The `FilterChain` uses factories to create appropriate filters based on LLM-extracted intents.
-
-### 5. **Chain of Responsibility Pattern**
-
-The filter chain pattern processes articles through a series of filters:
-
-```go
-// Chain composes multiple filters into a pipeline
-func Chain(filters ...Filter) Filter {
-    return func(ctx context.Context, articles []models.Article) ([]models.Article, error) {
-        // Apply filters sequentially
-    }
-}
-```
-
-**Benefits:**
-- Flexible query processing
-- Easy to add/remove filters
-- Supports complex multi-intent queries
-
-### 6. **Singleton Pattern**
-
-The logger uses the singleton pattern to ensure a single instance across the application:
-
-```go
-var (
-    instance *structuredLogger
-    once     sync.Once
-)
-
-func GetLogger() Logger {
-    once.Do(func() {
-        // Initialize logger once
-    })
-    return instance
-}
-```
-
-**Benefits:**
-- Consistent logging configuration
-- Thread-safe initialization
-- Global access point
-
-### 7. **Repository Pattern**
-
-Data access is abstracted through repository interfaces:
-
-```go
-type ArticleRepository interface {
-    Insert(article *models.Article) error
-    FindAll() ([]models.Article, error)
-    FilterArticles(params types.FilterArticlesRequest) ([]models.Article, error)
-    // ...
-}
-```
-
-**Benefits:**
-- Decouples business logic from data access
-- Easy to swap database implementations
-- Centralized data access logic
-
-### 8. **Structured Logging**
-
-All logging uses structured fields for better observability:
-
-```go
-logger.Info("Processing query", map[string]interface{}{
-    "query": query,
-    "user_id": userID,
-    "duration": duration,
-})
-```
-
-**Benefits:**
-- Machine-readable logs
-- Easy to query and filter
-- Better debugging and monitoring
-
-### 9. **Request/Response DTOs with Validation**
-
-Separate types for API requests and responses with built-in validation:
-
-```go
-type QueryArticlesRequest struct {
-    Query string  `query:"query" validate:"required"`
-    Lat   float64 `query:"lat" validate:"omitempty,min=-90,max=90"`
-    Lon   float64 `query:"lon" validate:"omitempty,min=-180,max=180"`
-}
-
-func (r *QueryArticlesRequest) Validate() error {
-    // Custom validation logic
-}
-```
-
-**Benefits:**
-- Clear API contracts
-- Centralized validation
-- Type safety
-
-### 10. **Error Handling Middleware**
-
-Centralized error handling using Fiber's error handler:
-
-```go
-type AppError struct {
-    Code    int
-    Message string
-    Err     error
-}
-
-func ErrorHandler(c *fiber.Ctx, err error) error {
-    // Convert errors to appropriate HTTP responses
-}
-```
-
-**Benefits:**
-- Consistent error responses
-- Centralized error logging
-- Clean error propagation
-
-### 11. **Caching Strategy**
-
-Redis caching for expensive operations (trending news):
-
-```go
-// Check cache first
-cachedArticles, found := trendingService.GetCachedTrending(lat, lon, limit)
-if found {
-    return cachedArticles, nil
-}
-// Compute and cache
-trendingService.CacheTrending(lat, lon, articles)
-```
-
-**Benefits:**
-- Improved performance
-- Reduced database load
-- Configurable TTL
-
-### 12. **Context Pattern**
-
-Filters use `context.Context` for cancellation and timeout support:
-
-```go
-type Filter func(ctx context.Context, in []models.Article) ([]models.Article, error)
-```
-
-**Benefits:**
-- Request cancellation support
-- Timeout handling
-- Request-scoped values
-
-### 13. **Service Container Pattern**
-
-A `Services` struct holds all service instances for organized dependency management:
-
-```go
-type Services struct {
-    LLM         LLMService
-    Trending    TrendingService
-    Article     ArticleService
-    FilterChain *FilterChain
-    Repos       *repositories.Repositories
-}
-```
-
-**Benefits:**
-- Centralized service initialization
-- Easy dependency management
-- Clear service relationships
-
-### 14. **Infrastructure Abstraction**
-
-Infrastructure components (DB, Redis, Logger) are abstracted:
-
-```go
-type Infrastructure struct {
-    DB     *gorm.DB
-    Redis  *redis.Client
-    Logger Logger
-}
-```
-
-**Benefits:**
-- Easy to mock for testing
-- Centralized resource management
-- Graceful shutdown support
-
-### 15. **Custom JSON Unmarshaling**
-
-Models implement custom JSON unmarshaling for date parsing:
-
-```go
-func (a *Article) UnmarshalJSON(data []byte) error {
-    // Custom date parsing logic
-}
-```
-
-**Benefits:**
-- Flexible date format handling
-- Type conversion at unmarshal time
-- Cleaner API
+## Architecture Patterns
+
+The application follows clean architecture principles:
+
+- **Layered Architecture**: Controllers → Services → Repositories
+- **Dependency Injection**: All dependencies injected via constructors
+- **Interface-Based Design**: Services and repositories use interfaces
+- **Repository Pattern**: Data access abstracted through repositories
+- **Filter Chain**: Multi-intent query processing using Chain of Responsibility
+- **Caching**: Redis caching for trending news results
+- **Structured Logging**: JSON-formatted logs with contextual fields
 
 ## Prerequisites
 
@@ -409,17 +155,14 @@ export LOG_LEVEL="debug"
 
 5. Run the application:
 ```bash
-go run cmd/api/main.go
+go run main.go
 ```
 
 ## Loading News Data
 
-Before you can query news articles, you need to load data into the database. The system provides two methods for loading news articles from JSON files.
+Before querying news articles, load data into the database using the API endpoint. See the [Load Data from JSON](#load-data-from-json) endpoint for details.
 
-### JSON File Format
-
-Your JSON file should contain an array of article objects with the following structure:
-
+**JSON File Format:**
 ```json
 [
   {
@@ -437,88 +180,7 @@ Your JSON file should contain an array of article objects with the following str
 ]
 ```
 
-**Field Requirements:**
-- `id`: Optional UUID. If not provided, one will be generated automatically
-- `title`: Required. Article headline
-- `description`: Optional. Article summary or excerpt
-- `url`: Required. Valid URL to the full article
-- `publication_date`: Required. ISO 8601 timestamp
-- `source_name`: Required. Name of the news source
-- `category`: Required. Array of category strings (at least one)
-- `relevance_score`: Required. Float between 0 and 1
-- `latitude`: Required. Float between -90 and 90
-- `longitude`: Required. Float between -180 and 180
-
-### Method 1: CLI Data Loader (Recommended)
-
-The CLI loader is a standalone command-line tool for loading data efficiently.
-
-**Build the loader:**
-```bash
-# Using Make (recommended)
-make build-loader
-
-# Or manually
-go build -o loader cmd/loader/main.go
-```
-
-**Run the loader:**
-```bash
-./loader -file path/to/articles.json
-```
-
-**Load sample data:**
-```bash
-# Ensure DATABASE_URL and LLM_API_KEY are set in your environment
-make load-data
-```
-
-**With Docker:**
-```bash
-# Copy your JSON file into the container
-docker cp articles.json contextual-news-api:/tmp/articles.json
-
-# Run the loader inside the container
-docker exec contextual-news-api ./loader -file /tmp/articles.json
-```
-
-**Features:**
-- Progress logging every 100 articles
-- Detailed statistics on success/failure
-- Batch insert for performance
-- Automatic UUID generation for articles without IDs
-- Handles duplicate IDs with upsert logic
-
-### Method 2: API Endpoint
-
-You can also load data via the REST API endpoint. See the [Load Data from JSON](#load-data-from-json) endpoint documentation for details.
-
-**Example with curl:**
-```bash
-curl -X POST http://localhost:8080/api/v1/news/load \
-  -H "Content-Type: application/json" \
-  -d '{"filepath": "/data/articles.json"}'
-```
-
-**Note:** The filepath must be accessible from the server's filesystem. This method is useful for automated workflows or when the JSON file is already on the server.
-
-### Loading Progress and Statistics
-
-Both methods provide detailed logging:
-
-- **Progress Updates**: Every 100 articles loaded
-- **Success Count**: Number of articles successfully inserted
-- **Error Count**: Number of articles that failed to insert
-- **Total Duration**: Time taken to complete the load
-
-Check the application logs for detailed statistics:
-```bash
-# Docker logs
-docker logs contextual-news-api
-
-# Local logs (if running directly)
-# Logs are output to stdout
-```
+**Required Fields:** `title`, `url`, `publication_date`, `source_name`, `category`, `relevance_score`, `latitude`, `longitude`
 
 ## API Endpoints
 
@@ -662,16 +324,20 @@ GET /api/v1/news/query?query=Latest technology news about AI near San Francisco&
 GET /api/v1/news/trending?lat=<latitude>&lon=<longitude>&limit=<limit>
 ```
 
-**Description:** Retrieve trending news articles based on location and user engagement metrics. Results are cached in Redis for performance.
+**Description:** Retrieve trending news articles based on location and user engagement metrics. Only returns articles that have user interactions (views/clicks). Results are cached in Redis for performance.
 
 **Query Parameters:**
-- `lat` (required): Latitude (-90 to 90)
-- `lon` (required): Longitude (-180 to 180)
+- `lat` (optional): Latitude (-90 to 90)
+- `lon` (optional): Longitude (-180 to 180)
 - `limit` (optional): Number of articles to return (default: 10, max: 100)
 
-**Example:**
+**Examples:**
 ```http
+# With location
 GET /api/v1/news/trending?lat=37.7749&lon=-122.4194&limit=10
+
+# Without location (global trending)
+GET /api/v1/news/trending?limit=10
 ```
 
 **Response:**
@@ -908,6 +574,7 @@ The API returns appropriate HTTP status codes and error messages:
 **Error Response Format:**
 ```json
 {
+  "error_code": "ERROR_CODE",
   "error": "Descriptive error message"
 }
 ```
@@ -974,17 +641,11 @@ make build
 # Build only the API
 make build-api
 
-# Build only the loader
-make build-loader
-
 # Run the API server
 make run
 
 # Run tests
 make test
-
-# Load sample data
-make load-data
 
 # Clean build artifacts
 make clean
@@ -1005,7 +666,7 @@ go test ./...
 make build-api
 
 # Or manually
-go build -o api cmd/api/main.go
+go build -o api main.go
 ```
 
 ### Running with Custom Configuration
