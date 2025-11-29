@@ -3,6 +3,7 @@ package services
 import (
 	"context"
 	"fmt"
+	"strconv"
 
 	"news-inshorts/src/infra"
 	"news-inshorts/src/models"
@@ -10,20 +11,21 @@ import (
 )
 
 // Filter defines the function type for filtering articles
-type Filter func(ctx context.Context, in []models.Article) ([]models.Article, error)
+type Filter func(ctx context.Context, in *[]models.Article) (*[]models.Article, error)
 
 // Chain composes multiple filters into a single filter pipeline
-func Chain(filters ...Filter) Filter {
-	return func(ctx context.Context, articles []models.Article) ([]models.Article, error) {
-		var err error
-		for _, f := range filters {
-			articles, err = f(ctx, articles)
-			if err != nil {
-				return nil, err
-			}
+func Chain(ctx context.Context, filters ...Filter) ([]models.Article, error) {
+	articles := []models.Article{}
+
+	for _, filter := range filters {
+		filteredArticles, err := filter(ctx, &articles)
+		if err != nil {
+			return nil, err
 		}
-		return articles, nil
+		articles = *filteredArticles
+		fmt.Println("Retrived articles after filter: ", len(articles), "with filter: ", filter)
 	}
+	return articles, nil
 }
 
 // FilterFactory is a function that creates a Filter from intent parameters
@@ -33,14 +35,16 @@ type FilterFactory func(params map[string]interface{}) Filter
 type FilterChain struct {
 	filterRegistry map[string]FilterFactory
 	articleRepo    repositories.ArticleRepository
+	llmService     LLMService
 	logger         infra.Logger
 }
 
 // NewFilterChain creates a new FilterChain instance
-func NewFilterChain(articleRepo repositories.ArticleRepository) *FilterChain {
+func NewFilterChain(articleRepo repositories.ArticleRepository, llmService LLMService) *FilterChain {
 	chain := &FilterChain{
 		filterRegistry: make(map[string]FilterFactory),
 		articleRepo:    articleRepo,
+		llmService:     llmService,
 		logger:         infra.GetLogger(),
 	}
 
@@ -63,11 +67,12 @@ func (fc *FilterChain) RegisterDefaultFilters() {
 		return FilterByCategory(fc.articleRepo, categories)
 	}
 	fc.filterRegistry[models.IntentTypeSource] = func(params map[string]interface{}) Filter {
-		source := ""
-		if s, ok := params["source"].(string); ok {
-			source = s
+		sources := []string{}
+		if s, ok := params["source"].([]string); ok {
+			sources = s
 		}
-		return FilterBySource(fc.articleRepo, source)
+		return FilterBySource(fc.articleRepo, sources)
+
 	}
 	fc.filterRegistry[models.IntentTypeScore] = func(params map[string]interface{}) Filter {
 		threshold := 0.7
@@ -100,21 +105,23 @@ func (fc *FilterChain) RegisterDefaultFilters() {
 				}
 			}
 		}
-		return FilterByTextSearch(fc.articleRepo, query)
+		return FilterByTextSearch(fc.articleRepo, fc.llmService, query)
 	}
 	fc.filterRegistry[models.IntentTypeNearby] = func(params map[string]interface{}) Filter {
 		lat := 0.0
 		lon := 0.0
 		radius := 50.0
 
-		if latitude, ok := params["latitude"].(float64); ok {
+		if latitude, err := strconv.ParseFloat(params["latitude"].(string), 64); err == nil {
 			lat = latitude
 		}
-		if longitude, ok := params["longitude"].(float64); ok {
+		if longitude, err := strconv.ParseFloat(params["longitude"].(string), 64); err == nil {
 			lon = longitude
 		}
-		if r, ok := params["radius"].(float64); ok {
-			radius = r
+		if _, ok := params["radius"]; ok {
+			if r, err := strconv.ParseFloat(params["radius"].(string), 64); err == nil {
+				radius = r
+			}
 		}
 		return FilterByRadius(fc.articleRepo, lat, lon, radius)
 	}
@@ -127,9 +134,6 @@ func (fc *FilterChain) Execute(intents []models.Intent, entities []string, locat
 	}
 
 	var filters []Filter
-	if len(entities) > 0 {
-		filters = append(filters, FilterByTextSearch(fc.articleRepo, entities))
-	}
 
 	for _, intent := range intents {
 		factory, exists := fc.filterRegistry[intent.Type]
@@ -153,50 +157,28 @@ func (fc *FilterChain) Execute(intents []models.Intent, entities []string, locat
 				continue
 			}
 		case models.IntentTypeSource:
-			if source, ok := intent.Values.(string); ok {
-				params["source"] = source
+			if sources, ok := intent.Values.([]string); ok {
+				params["source"] = sources
 			} else {
 				fc.logger.Error("Invalid source values", nil, map[string]interface{}{"intent": intent.Type})
-				continue
 			}
 		case models.IntentTypeNearby:
-			if location != nil {
-				params["latitude"] = location.Latitude
-				params["longitude"] = location.Longitude
-				params["radius"] = 50.0
-			} else {
-				fc.logger.Error("Location required for nearby intent", nil, map[string]interface{}{"intent": intent.Type})
+			values, ok := intent.Values.([]string)
+			if !ok || len(values) < 2 {
+				fc.logger.Error("Invalid nearby values", nil, map[string]interface{}{"intent": intent.Type})
 				continue
 			}
-		case models.IntentTypeScore:
-			if threshold, ok := intent.Values.(float64); ok {
-				params["threshold"] = threshold
-			} else if threshold, ok := intent.Values.(int); ok {
-				params["threshold"] = float64(threshold)
-			}
-		case models.EntityTypeSearch:
-			if query, ok := intent.Values.(string); ok {
-				params["query"] = query
-			} else if queries, ok := intent.Values.([]string); ok {
-				params["query"] = queries
-			} else if queries, ok := intent.Values.([]interface{}); ok {
-				params["query"] = queries
-			}
+			params["latitude"] = values[0]
+			params["longitude"] = values[1]
 		}
 
 		filter := factory(params)
 		filters = append(filters, filter)
 	}
-	filters = append(filters, FilterByScore(fc.articleRepo, 0.7))
-	fmt.Println("filters", filters)
-
-	ctx := context.Background()
-	pipeline := Chain(filters...)
-	var articles []models.Article
-	result, err := pipeline(ctx, articles)
-	if err != nil {
-		return nil, fmt.Errorf("filter chain execution failed: %w", err)
+	if len(filters) > 0 {
+		filters = append(filters, FilterByTextSearch(fc.articleRepo, fc.llmService, entities))
+		filters = append(filters, FilterByScore(fc.articleRepo, 0.1))
 	}
-
-	return result, nil
+	ctx := context.Background()
+	return Chain(ctx, filters...)
 }

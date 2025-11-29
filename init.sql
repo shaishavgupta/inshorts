@@ -1,6 +1,7 @@
 -- Enable required PostgreSQL extensions
 CREATE EXTENSION IF NOT EXISTS "uuid-ossp";
 CREATE EXTENSION IF NOT EXISTS "postgis";
+CREATE EXTENSION IF NOT EXISTS "vector";
 
 -- Create articles table with geography columns
 CREATE TABLE IF NOT EXISTS articles (
@@ -14,7 +15,9 @@ CREATE TABLE IF NOT EXISTS articles (
     relevance_score FLOAT NOT NULL CHECK (relevance_score >= 0 AND relevance_score <= 1),
     latitude FLOAT NOT NULL,
     longitude FLOAT NOT NULL,
-    created_at TIMESTAMP DEFAULT NOW()
+    created_at TIMESTAMP DEFAULT NOW(),
+    summary TEXT,
+    description_vector VECTOR(1536)
 );
 
 -- Create user_events table with geography column
@@ -58,20 +61,7 @@ CREATE INDEX IF NOT EXISTS idx_user_events_timestamp ON user_events(timestamp DE
 -- B-tree index for user_id queries
 CREATE INDEX IF NOT EXISTS idx_user_events_user ON user_events(user_id);
 
--- Create a helper function to calculate distance in kilometers using Haversine formula
-CREATE OR REPLACE FUNCTION calculate_distance_km(lat1 FLOAT, lon1 FLOAT, lat2 FLOAT, lon2 FLOAT)
-RETURNS FLOAT AS $$
-DECLARE
-    earth_radius_km FLOAT := 6371.0;
-    dlat FLOAT;
-    dlon FLOAT;
-    a FLOAT;
-    c FLOAT;
-BEGIN
-    dlat := radians(lat2 - lat1);
-    dlon := radians(lon2 - lon1);
-    a := sin(dlat/2) * sin(dlat/2) + cos(radians(lat1)) * cos(radians(lat2)) * sin(dlon/2) * sin(dlon/2);
-    c := 2 * atan2(sqrt(a), sqrt(1-a));
-    RETURN earth_radius_km * c;
-END;
-$$ LANGUAGE plpgsql IMMUTABLE;
+CREATE INDEX articles_geo_idx ON articles USING GIST (
+    (ST_SetSRID(ST_MakePoint(longitude, latitude), 4326)::geography)
+);
+

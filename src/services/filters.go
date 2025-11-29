@@ -4,197 +4,230 @@ import (
 	"context"
 	"fmt"
 	"math"
+	"slices"
 	"sort"
 	"strings"
 
 	"news-inshorts/src/models"
 	"news-inshorts/src/repositories"
 	"news-inshorts/src/types"
+	"news-inshorts/src/utils"
 )
 
 // FilterByCategory creates a filter that filters articles by category
 func FilterByCategory(repo repositories.ArticleRepository, categories []string) Filter {
-	return func(ctx context.Context, in []models.Article) ([]models.Article, error) {
+	return func(ctx context.Context, in *[]models.Article) (*[]models.Article, error) {
 		if len(categories) == 0 {
 			return in, nil
 		}
 
-		dbResults, err := repo.FilterArticles(types.FilterArticlesRequest{
-			Category: strings.Join(categories, ","),
-		})
-		if err != nil {
-			return nil, fmt.Errorf("category filter failed: %w", err)
-		}
+		articles := *in
+		filteredArticles := []models.Article{}
 
-		if len(in) > 0 {
-			dbMap := make(map[string]models.Article)
-			for _, article := range dbResults {
-				dbMap[article.ID] = article
-			}
-
-			var filtered []models.Article
-			for _, article := range in {
-				if _, exists := dbMap[article.ID]; exists {
-					filtered = append(filtered, article)
+		if len(articles) > 0 {
+			for _, article := range articles {
+				// Check if article has any matching category
+				for _, articleCategory := range article.Category {
+					if slices.Contains(categories, articleCategory) {
+						filteredArticles = append(filteredArticles, article)
+						break
+					}
 				}
 			}
-
-			sort.Slice(filtered, func(i, j int) bool {
-				return filtered[i].PublicationDate.After(filtered[j].PublicationDate)
+		} else {
+			dbResults, err := repo.FilterArticles(types.FilterArticlesRequest{
+				Category: strings.Join(categories, ","),
 			})
-
-			return filtered, nil
+			if err != nil {
+				return nil, fmt.Errorf("category filter failed: %w", err)
+			}
+			filteredArticles = dbResults
 		}
 
-		return dbResults, nil
+		return &filteredArticles, nil
 	}
 }
 
 // FilterBySource creates a filter that filters articles by source name
-func FilterBySource(repo repositories.ArticleRepository, source string) Filter {
-	return func(ctx context.Context, in []models.Article) ([]models.Article, error) {
-		if source == "" {
+func FilterBySource(repo repositories.ArticleRepository, sources []string) Filter {
+	return func(ctx context.Context, in *[]models.Article) (*[]models.Article, error) {
+		if len(sources) == 0 {
 			return in, nil
 		}
 
-		dbResults, err := repo.FilterArticles(types.FilterArticlesRequest{
-			Source: source,
-		})
-		if err != nil {
-			return nil, fmt.Errorf("source filter failed: %w", err)
-		}
+		articles := *in
+		filteredArticles := []models.Article{}
 
-		if len(in) > 0 {
-			dbMap := make(map[string]models.Article)
-			for _, article := range dbResults {
-				dbMap[article.ID] = article
-			}
-
-			var filtered []models.Article
-			for _, article := range in {
-				if _, exists := dbMap[article.ID]; exists {
-					filtered = append(filtered, article)
+		if len(articles) > 0 {
+			for _, article := range articles {
+				if slices.Contains(sources, article.SourceName) {
+					filteredArticles = append(filteredArticles, article)
 				}
 			}
-
-			sort.Slice(filtered, func(i, j int) bool {
-				return filtered[i].PublicationDate.After(filtered[j].PublicationDate)
+		} else {
+			dbResults, err := repo.FilterArticles(types.FilterArticlesRequest{
+				Source: utils.FormatStringsForLikeQuery(sources),
 			})
-
-			return filtered, nil
+			if err != nil {
+				return nil, fmt.Errorf("source filter failed: %w", err)
+			}
+			filteredArticles = dbResults
 		}
 
-		return dbResults, nil
+		return &filteredArticles, nil
 	}
 }
 
 // FilterByScore creates a filter that filters articles by relevance score threshold
 func FilterByScore(repo repositories.ArticleRepository, threshold float64) Filter {
-	return func(ctx context.Context, in []models.Article) ([]models.Article, error) {
-		dbResults, err := repo.FindByScoreThreshold(threshold)
-		if err != nil {
-			return nil, fmt.Errorf("score filter failed: %w", err)
-		}
+	return func(ctx context.Context, in *[]models.Article) (*[]models.Article, error) {
+		articles := *in
+		filteredArticles := []models.Article{}
 
-		if len(in) > 0 {
-			dbMap := make(map[string]models.Article)
-			for _, article := range dbResults {
-				dbMap[article.ID] = article
-			}
-
-			var filtered []models.Article
-			for _, article := range in {
-				if _, exists := dbMap[article.ID]; exists {
-					filtered = append(filtered, article)
+		if len(articles) > 0 {
+			for _, article := range articles {
+				if article.RelevanceScore >= threshold {
+					filteredArticles = append(filteredArticles, article)
 				}
 			}
-
-			sort.Slice(filtered, func(i, j int) bool {
-				return filtered[i].RelevanceScore > filtered[j].RelevanceScore
+			sort.Slice(filteredArticles, func(i, j int) bool {
+				return articles[i].RelevanceScore > articles[j].RelevanceScore
 			})
-
-			return filtered, nil
+		} else {
+			dbResults, err := repo.FilterArticles(types.FilterArticlesRequest{
+				ScoreThreshold: threshold,
+			})
+			if err != nil {
+				return nil, fmt.Errorf("score filter failed: %w", err)
+			}
+			filteredArticles = dbResults
 		}
 
-		return dbResults, nil
+		return &filteredArticles, nil
 	}
 }
 
-// FilterByTextSearch creates a filter that filters articles using text search
-func FilterByTextSearch(repo repositories.ArticleRepository, query []string) Filter {
-	return func(ctx context.Context, in []models.Article) ([]models.Article, error) {
+// FilterByTextSearch creates a filter that filters articles using cosine similarity search
+func FilterByTextSearch(repo repositories.ArticleRepository, llmService LLMService, query []string) Filter {
+	return func(ctx context.Context, in *[]models.Article) (*[]models.Article, error) {
 		if len(query) == 0 {
 			return in, nil
 		}
 
-		searchResults, err := repo.SearchByText(query)
+		articles := *in
+		if len(articles) == 0 {
+			return in, nil
+		}
+
+		// Join query strings into a single query string
+		queryString := strings.Join(query, " ")
+		if queryString == "" {
+			return in, nil
+		}
+
+		// Generate embedding for the query
+		queryVector, err := llmService.GenerateEmbedding(queryString)
 		if err != nil {
-			return nil, fmt.Errorf("search filter failed: %w", err)
+			return nil, fmt.Errorf("failed to generate query embedding: %w", err)
 		}
 
-		if len(in) > 0 {
-			searchMap := make(map[string]models.Article)
-			for _, article := range searchResults {
-				searchMap[article.ID] = article
+		// Calculate cosine similarity for each article with DescriptionVector
+		type articleWithSimilarity struct {
+			article    models.Article
+			similarity float64
+		}
+
+		articlesWithSimilarity := make([]articleWithSimilarity, 0, len(articles))
+
+		for _, article := range articles {
+			// Skip articles without DescriptionVector
+			if len(article.DescriptionVector) == 0 {
+				continue
 			}
 
-			var filtered []models.Article
-			for _, article := range in {
-				if _, exists := searchMap[article.ID]; exists {
-					filtered = append(filtered, article)
-				}
-			}
+			// Calculate cosine similarity
+			similarity := cosineSimilarity(queryVector, article.DescriptionVector)
 
-			sort.Slice(filtered, func(i, j int) bool {
-				return filtered[i].RelevanceScore > filtered[j].RelevanceScore
+			articlesWithSimilarity = append(articlesWithSimilarity, articleWithSimilarity{
+				article:    article,
+				similarity: similarity,
 			})
-
-			return filtered, nil
 		}
 
-		return searchResults, nil
+		// Sort by similarity score (descending)
+		sort.Slice(articlesWithSimilarity, func(i, j int) bool {
+			return articlesWithSimilarity[i].similarity > articlesWithSimilarity[j].similarity
+		})
+
+		// Extract articles in sorted order
+		filteredArticles := make([]models.Article, 0, len(articlesWithSimilarity))
+		for _, aws := range articlesWithSimilarity {
+			filteredArticles = append(filteredArticles, aws.article)
+		}
+
+		return &filteredArticles, nil
 	}
+}
+
+// cosineSimilarity calculates the cosine similarity between two vectors
+func cosineSimilarity(vec1, vec2 []float64) float64 {
+	if len(vec1) != len(vec2) {
+		return 0.0
+	}
+
+	var dotProduct, norm1, norm2 float64
+	for i := 0; i < len(vec1); i++ {
+		dotProduct += vec1[i] * vec2[i]
+		norm1 += vec1[i] * vec1[i]
+		norm2 += vec2[i] * vec2[i]
+	}
+
+	norm1 = math.Sqrt(norm1)
+	norm2 = math.Sqrt(norm2)
+
+	if norm1 == 0 || norm2 == 0 {
+		return 0.0
+	}
+
+	return dotProduct / (norm1 * norm2)
 }
 
 // FilterByRadius creates a filter that filters articles by geographic proximity
 func FilterByRadius(repo repositories.ArticleRepository, lat, lon, radius float64) Filter {
-	return func(ctx context.Context, in []models.Article) ([]models.Article, error) {
+	return func(ctx context.Context, in *[]models.Article) (*[]models.Article, error) {
 		if lat == 0 && lon == 0 {
 			return in, nil
 		}
 
-		nearbyResults, err := repo.FilterArticles(types.FilterArticlesRequest{
-			Lat:    lat,
-			Lon:    lon,
-			Radius: radius,
-		})
-		if err != nil {
-			return nil, fmt.Errorf("nearby filter failed: %w", err)
-		}
+		articles := *in
+		filteredArticles := []models.Article{}
 
-		if len(in) > 0 {
-			nearbyMap := make(map[string]models.Article)
-			for _, article := range nearbyResults {
-				nearbyMap[article.ID] = article
-			}
-
-			var filtered []models.Article
-			for _, article := range in {
-				if _, exists := nearbyMap[article.ID]; exists {
-					filtered = append(filtered, article)
+		if len(articles) > 0 {
+			// Filter in-memory by calculating distance
+			for _, article := range articles {
+				distance := haversineDistance(lat, lon, article.Latitude, article.Longitude)
+				if distance <= radius {
+					filteredArticles = append(filteredArticles, article)
 				}
 			}
-
-			sort.Slice(filtered, func(i, j int) bool {
-				distI := haversineDistance(lat, lon, filtered[i].Latitude, filtered[i].Longitude)
-				distJ := haversineDistance(lat, lon, filtered[j].Latitude, filtered[j].Longitude)
+			sort.Slice(filteredArticles, func(i, j int) bool {
+				distI := haversineDistance(lat, lon, articles[i].Latitude, articles[i].Longitude)
+				distJ := haversineDistance(lat, lon, articles[j].Latitude, articles[j].Longitude)
 				return distI < distJ
 			})
-
-			return filtered, nil
+		} else {
+			nearbyResults, err := repo.FilterArticles(types.FilterArticlesRequest{
+				Lat:    lat,
+				Lon:    lon,
+				Radius: radius,
+			})
+			if err != nil {
+				return nil, fmt.Errorf("nearby filter failed: %w", err)
+			}
+			filteredArticles = nearbyResults
 		}
 
-		return nearbyResults, nil
+		return &filteredArticles, nil
 	}
 }
 

@@ -1,8 +1,9 @@
 services:
   # PostgreSQL database with PostGIS and pgvector extensions
   postgres:
-    image: postgis/postgis:15-3.3
+    image: garapadev/postgres-postgis-pgvector:15-stable
     container_name: postgres
+    platform: linux/amd64
     environment:
       POSTGRES_DB: inshorts
       POSTGRES_USER: postgres

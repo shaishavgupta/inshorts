@@ -66,25 +66,33 @@ type LoadDataResponse struct {
 
 // FilterArticlesRequest represents the query parameters for GET /api/v1/news/filter
 type FilterArticlesRequest struct {
-	Category string  `json:"category" query:"category" validate:"omitempty"`
-	Source   string  `json:"source" query:"source" validate:"omitempty"`
-	Lat      float64 `json:"lat" query:"lat" validate:"omitempty,min=-90,max=90"`
-	Lon      float64 `json:"lon" query:"lon" validate:"omitempty,min=-180,max=180"`
-	Radius   float64 `json:"radius" query:"radius" validate:"omitempty,min=0"`
+	Category       string  `json:"category" query:"category" validate:"omitempty"`
+	Source         string  `json:"source" query:"source" validate:"omitempty"`
+	Lat            float64 `json:"lat" query:"lat" validate:"omitempty,min=-90,max=90"`
+	Lon            float64 `json:"lon" query:"lon" validate:"omitempty,min=-180,max=180"`
+	Radius         float64 `json:"radius" query:"radius" validate:"omitempty,min=0"`
+	ScoreThreshold float64 `json:"score_threshold" query:"score_threshold" validate:"omitempty,min=0,max=1"`
 }
 
 // Validate validates the FilterArticlesRequest
-// At least one filter (category, source, or lat/lon) must be provided
+// At least one filter (category, source, lat/lon, or score_threshold) must be provided
 func (r *FilterArticlesRequest) Validate() error {
 	// Check that at least one filter is provided
-	if r.Category == "" && r.Source == "" && (r.Lat == 0 || r.Lon == 0) {
-		return fmt.Errorf("at least one filter parameter must be provided: category, source, or lat/lon")
+	if r.Category == "" && r.Source == "" && (r.Lat == 0 || r.Lon == 0) && r.ScoreThreshold == 0 {
+		return fmt.Errorf("at least one filter parameter must be provided: category, source, lat/lon, or score_threshold")
 	}
 
 	// Validate latitude if provided
 	if r.Lat != 0 || r.Lon != 0 {
 		if r.Lat < -90 || r.Lat > 90 || r.Lon < -180 || r.Lon > 180 {
 			return fmt.Errorf("latitude and longitude must be between -90 and 90 and -180 and 180 respectively")
+		}
+	}
+
+	// Validate score threshold if provided
+	if r.ScoreThreshold != 0 {
+		if r.ScoreThreshold < 0 || r.ScoreThreshold > 1 {
+			return fmt.Errorf("score_threshold must be between 0 and 1")
 		}
 	}
 
@@ -144,4 +152,51 @@ type CreateArticleResponse struct {
 	Success bool           `json:"success"`
 	Message string         `json:"message"`
 	Article models.Article `json:"article"`
+}
+
+// GetTrendingRequest represents the query parameters for GET /api/v1/news/trending
+type GetTrendingRequest struct {
+	Lat   float64 `query:"lat" validate:"omitempty,min=-90,max=90"`
+	Lon   float64 `query:"lon" validate:"omitempty,min=-180,max=180"`
+	Limit int     `query:"limit" validate:"omitempty,min=1,max=100"`
+}
+
+// ErrorResponse represents a standardized error response with error code
+type ErrorResponse struct {
+	ErrorCode string `json:"error_code"`
+	Error     string `json:"error"`
+}
+
+// Validate validates the GetTrendingRequest
+func (r *GetTrendingRequest) Validate() error {
+	// Validate latitude if provided
+	if r.Lat != 0 {
+		if r.Lat < -90 || r.Lat > 90 {
+			return fmt.Errorf("latitude must be between -90 and 90")
+		}
+	}
+
+	// Validate longitude if provided
+	if r.Lon != 0 {
+		if r.Lon < -180 || r.Lon > 180 {
+			return fmt.Errorf("longitude must be between -180 and 180")
+		}
+	}
+
+	// Set default limit if not provided
+	if r.Limit == 0 {
+		r.Limit = 10
+	}
+
+	// Validate limit
+	if r.Limit <= 0 {
+		return fmt.Errorf("limit must be greater than 0")
+	}
+
+	// Cap limit at 100
+	if r.Limit > 100 {
+		r.Limit = 100
+	}
+
+	return nil
 }

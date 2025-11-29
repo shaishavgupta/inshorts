@@ -31,13 +31,13 @@ func NewServices(
 	llmService := NewLLMService(&cfg.LLM)
 
 	// Initialize filter chain with all filters
-	filterChain := NewFilterChain(repos.Article)
+	filterChain := NewFilterChain(repos.Article, llmService)
 
 	// Initialize trending service
 	trendingService := NewTrendingService(repos.UserEvent, redisClient, cfg.Cache.TTL)
 
 	// Initialize news service
-	newsService := NewArticleService(llmService, filterChain, trendingService, repos.Article)
+	newsService := NewArticleService(llmService, filterChain, trendingService, repos.Article, repos.UserEvent)
 
 	return &Services{
 		LLM:         llmService,

@@ -34,17 +34,18 @@ type QueryAnalysis struct {
 
 // Article represents a news article stored in the database
 type Article struct {
-	ID              string    `json:"id" db:"id"`
-	Title           string    `json:"title" db:"title" validate:"required"`
-	Description     string    `json:"description" db:"description"`
-	URL             string    `json:"url" db:"url" validate:"required,url"`
-	PublicationDate time.Time `json:"publication_date" db:"publication_date" validate:"required"`
-	SourceName      string    `json:"source_name" db:"source_name" validate:"required"`
-	Category        []string  `json:"category" db:"category" validate:"required,min=1"`
-	RelevanceScore  float64   `json:"relevance_score" db:"relevance_score" validate:"required,min=0,max=1"`
-	Latitude        float64   `json:"latitude" db:"latitude" validate:"required,min=-90,max=90"`
-	Longitude       float64   `json:"longitude" db:"longitude" validate:"required,min=-180,max=180"`
-	Summary         string    `json:"summary" db:"summary"`
+	ID                string    `json:"id" db:"id"`
+	Title             string    `json:"title" db:"title" validate:"required"`
+	Description       string    `json:"description" db:"description"`
+	URL               string    `json:"url" db:"url" validate:"required,url"`
+	PublicationDate   time.Time `json:"publication_date" db:"publication_date" validate:"required"`
+	SourceName        string    `json:"source_name" db:"source_name" validate:"required"`
+	Category          []string  `json:"category" db:"category" validate:"required,min=1"`
+	RelevanceScore    float64   `json:"relevance_score" db:"relevance_score" validate:"required,min=0,max=1"`
+	Latitude          float64   `json:"latitude" db:"latitude" validate:"required,min=-90,max=90"`
+	Longitude         float64   `json:"longitude" db:"longitude" validate:"required,min=-180,max=180"`
+	Summary           string    `json:"summary" db:"summary"`
+	DescriptionVector []float64 `json:"-" db:"description_vector"`
 }
 
 // UnmarshalJSON implements json.Unmarshaler for Article

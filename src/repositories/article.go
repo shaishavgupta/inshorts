@@ -2,11 +2,13 @@ package repositories
 
 import (
 	"fmt"
+	"strconv"
 	"strings"
 
 	"news-inshorts/src/infra"
 	"news-inshorts/src/models"
 	"news-inshorts/src/types"
+	"news-inshorts/src/utils"
 
 	"github.com/lib/pq"
 	"gorm.io/gorm"
@@ -25,10 +27,11 @@ type ArticleRepository interface {
 	BulkInsert(articles []models.Article) (*LoadStats, error)
 	Insert(article *models.Article) error
 	FindAll() ([]models.Article, error)
-	FindByScoreThreshold(threshold float64) ([]models.Article, error)
 	SearchByText(query []string) ([]models.Article, error)
 	FilterArticles(params types.FilterArticlesRequest) ([]models.Article, error)
 	FindByIDs(ids []string) ([]models.Article, error)
+	GetDistinctSourceNames() ([]string, error)
+	GetDistinctCategories() ([]string, error)
 }
 
 // articleRepository implements ArticleRepository
@@ -97,17 +100,12 @@ func (r *articleRepository) FilterArticles(params types.FilterArticlesRequest) (
 	var conditions []string
 
 	if params.Category != "" {
-		cats := strings.Split(params.Category, ",")
-		quoted := make([]string, len(cats))
-		for i, c := range cats {
-			quoted[i] = fmt.Sprintf("'%s'", strings.ReplaceAll(c, "'", "''"))
-		}
+		quoted := utils.QuoteAndEscapeStrings(params.Category)
 		conditions = append(conditions, fmt.Sprintf(`category @> ARRAY[%s]`, strings.Join(quoted, ",")))
 	}
 
 	if params.Source != "" {
-		escapedSource := strings.ReplaceAll(params.Source, "'", "''")
-		conditions = append(conditions, fmt.Sprintf(`source_name = '%s'`, escapedSource))
+		conditions = append(conditions, fmt.Sprintf(`source_name ILIKE ANY (ARRAY[%s])`, params.Source))
 	}
 
 	if params.Lat != 0 && params.Lon != 0 {
@@ -122,6 +120,10 @@ func (r *articleRepository) FilterArticles(params types.FilterArticlesRequest) (
 		}
 	}
 
+	if params.ScoreThreshold > 0 {
+		conditions = append(conditions, fmt.Sprintf(`relevance_score >= %f`, params.ScoreThreshold))
+	}
+
 	if len(conditions) > 0 {
 		query += " WHERE " + strings.Join(conditions, " AND ")
 	}
@@ -132,11 +134,17 @@ func (r *articleRepository) FilterArticles(params types.FilterArticlesRequest) (
 			ST_SetSRID(ST_MakePoint(longitude, latitude), 4326)::geography,
 			ST_SetSRID(ST_MakePoint(%f, %f), 4326)::geography
 		) ASC`, params.Lon, params.Lat)
+	} else if params.ScoreThreshold > 0 {
+		orderBy = "relevance_score DESC"
 	} else {
 		orderBy = "publication_date DESC"
 	}
 
 	var articles []models.Article
+	fmt.Println(r.db.Raw(query).Order(orderBy).Statement.ToSQL(func(tx *gorm.DB) *gorm.DB {
+		return tx.Order(orderBy)
+	}))
+
 	if err := r.db.Raw(query).Order(orderBy).Scan(&articles).Error; err != nil {
 		r.log.Error("Failed to query articles", err, map[string]interface{}{
 			"query": query,
@@ -182,41 +190,6 @@ func (r *articleRepository) FindByIDs(ids []string) ([]models.Article, error) {
 	r.log.Info("Retrieved articles by IDs", map[string]interface{}{
 		"requested_count": len(ids),
 		"found_count":     len(articles),
-	})
-
-	return articles, nil
-}
-
-// FindByScoreThreshold retrieves articles with relevance score above the threshold
-func (r *articleRepository) FindByScoreThreshold(threshold float64) ([]models.Article, error) {
-	query := `
-		SELECT
-			id,
-			title,
-			description,
-			url,
-			publication_date,
-			source_name,
-			category,
-			relevance_score,
-			latitude,
-			longitude
-		FROM articles
-		WHERE relevance_score >= ?
-		ORDER BY relevance_score DESC
-	`
-
-	var articles []models.Article
-	if err := r.db.Raw(query, threshold).Scan(&articles).Error; err != nil {
-		r.log.Error("Failed to query articles by score threshold", err, map[string]interface{}{
-			"threshold": threshold,
-		})
-		return nil, fmt.Errorf("failed to query articles by score threshold: %w", err)
-	}
-
-	r.log.Info("Retrieved articles by score threshold", map[string]interface{}{
-		"threshold": threshold,
-		"count":     len(articles),
 	})
 
 	return articles, nil
@@ -312,6 +285,18 @@ func (r *articleRepository) validateArticle(article *models.Article, index int) 
 	return errors
 }
 
+// formatVector formats a float64 slice as a pgvector string format: "[0.1,0.2,0.3]"
+func formatVector(vector []float64) string {
+	if len(vector) == 0 {
+		return "[]"
+	}
+	var parts []string
+	for _, v := range vector {
+		parts = append(parts, strconv.FormatFloat(v, 'f', -1, 64))
+	}
+	return "[" + strings.Join(parts, ",") + "]"
+}
+
 // BulkInsert inserts multiple articles into the database in a single transaction
 func (r *articleRepository) BulkInsert(articles []models.Article) (*LoadStats, error) {
 	stats := &LoadStats{
@@ -367,7 +352,8 @@ func (r *articleRepository) BulkInsert(articles []models.Article) (*LoadStats, e
 			relevance_score,
 			latitude,
 			longitude,
-			summary
+			summary,
+			description_vector
 		) VALUES (
 			COALESCE(?::uuid, uuid_generate_v4()),
 			?,
@@ -379,7 +365,8 @@ func (r *articleRepository) BulkInsert(articles []models.Article) (*LoadStats, e
 			?,
 			?,
 			?,
-			?
+			?,
+			?::vector
 		) ON CONFLICT (id) DO NOTHING;
 	`
 
@@ -387,6 +374,14 @@ func (r *articleRepository) BulkInsert(articles []models.Article) (*LoadStats, e
 	errorCount := 0
 
 	for i, article := range articles {
+		// Format vector as string for pgvector
+		var vectorStr interface{}
+		if len(article.DescriptionVector) > 0 {
+			vectorStr = formatVector(article.DescriptionVector)
+		} else {
+			vectorStr = nil
+		}
+
 		if err := tx.Exec(insertQuery,
 			article.ID,
 			article.Title,
@@ -399,6 +394,7 @@ func (r *articleRepository) BulkInsert(articles []models.Article) (*LoadStats, e
 			article.Latitude,
 			article.Longitude,
 			article.Summary,
+			vectorStr,
 		).Error; err != nil {
 			errorCount++
 			r.log.Error("Failed to insert article", err, map[string]interface{}{
@@ -457,7 +453,8 @@ func (r *articleRepository) Insert(article *models.Article) error {
 			relevance_score,
 			latitude,
 			longitude,
-			summary
+			summary,
+			description_vector
 		) VALUES (
 			COALESCE(?::uuid, uuid_generate_v4()),
 			?,
@@ -469,9 +466,18 @@ func (r *articleRepository) Insert(article *models.Article) error {
 			?,
 			?,
 			?,
-			?
+			?,
+			?::vector
 		) RETURNING id;
 	`
+
+	// Format vector as string for pgvector
+	var vectorStr interface{}
+	if len(article.DescriptionVector) > 0 {
+		vectorStr = formatVector(article.DescriptionVector)
+	} else {
+		vectorStr = nil
+	}
 
 	var insertedID string
 	if err := r.db.Raw(insertQuery,
@@ -486,6 +492,7 @@ func (r *articleRepository) Insert(article *models.Article) error {
 		article.Latitude,
 		article.Longitude,
 		article.Summary,
+		vectorStr,
 	).Scan(&insertedID).Error; err != nil {
 		r.log.Error("Failed to insert article", err, map[string]interface{}{
 			"title": article.Title,
@@ -503,4 +510,48 @@ func (r *articleRepository) Insert(article *models.Article) error {
 	})
 
 	return nil
+}
+
+// GetDistinctSourceNames retrieves all distinct source names from the articles table
+func (r *articleRepository) GetDistinctSourceNames() ([]string, error) {
+	query := `
+		SELECT DISTINCT source_name
+		FROM articles
+		WHERE source_name IS NOT NULL AND source_name != ''
+		ORDER BY source_name ASC
+	`
+
+	var sourceNames []string
+	if err := r.db.Raw(query).Scan(&sourceNames).Error; err != nil {
+		r.log.Error("Failed to query distinct source names", err, nil)
+		return nil, fmt.Errorf("failed to query distinct source names: %w", err)
+	}
+
+	r.log.Info("Retrieved distinct source names", map[string]interface{}{
+		"count": len(sourceNames),
+	})
+
+	return sourceNames, nil
+}
+
+// GetDistinctCategories retrieves all distinct categories from the articles table
+func (r *articleRepository) GetDistinctCategories() ([]string, error) {
+	query := `
+		SELECT DISTINCT unnest(category) AS category
+		FROM articles
+		WHERE category IS NOT NULL AND array_length(category, 1) > 0
+		ORDER BY category ASC
+	`
+
+	var categories []string
+	if err := r.db.Raw(query).Scan(&categories).Error; err != nil {
+		r.log.Error("Failed to query distinct categories", err, nil)
+		return nil, fmt.Errorf("failed to query distinct categories: %w", err)
+	}
+
+	r.log.Info("Retrieved distinct categories", map[string]interface{}{
+		"count": len(categories),
+	})
+
+	return categories, nil
 }

@@ -33,21 +33,28 @@ func (ac *ArticleController) QueryArticles(c *fiber.Ctx) error {
 	var req types.QueryArticlesRequest
 
 	if err := c.QueryParser(&req); err != nil {
-		return c.Status(fiber.StatusBadRequest).JSON(fiber.Map{
-			"error": "Invalid query parameters",
+		return c.Status(fiber.StatusBadRequest).JSON(types.ErrorResponse{
+			ErrorCode: "INVALID_QUERY_PARAMS",
+			Error:     "Invalid query parameters",
 		})
 	}
 
 	if err := req.Validate(); err != nil {
-		return c.Status(fiber.StatusBadRequest).JSON(fiber.Map{
-			"error": err.Error(),
+		return c.Status(fiber.StatusBadRequest).JSON(types.ErrorResponse{
+			ErrorCode: "VALIDATION_ERROR",
+			Error:     err.Error(),
 		})
 	}
 
 	articles, err := ac.articleService.ProcessArticleQuery(req.Query, req.Location)
 	if err != nil {
-		return c.Status(fiber.StatusInternalServerError).JSON(fiber.Map{
-			"error": "Failed to process query",
+		ac.logger.Error("Failed to process article query", err, map[string]interface{}{
+			"query":    req.Query,
+			"location": req.Location,
+		})
+		return c.Status(fiber.StatusInternalServerError).JSON(types.ErrorResponse{
+			ErrorCode: "QUERY_PROCESSING_FAILED",
+			Error:     "Failed to process query",
 		})
 	}
 
@@ -60,36 +67,32 @@ func (ac *ArticleController) QueryArticles(c *fiber.Ctx) error {
 
 // GetTrending handles GET /api/v1/news/trending
 func (ac *ArticleController) GetTrending(c *fiber.Ctx) error {
-	lat := c.QueryFloat("lat", 0)
-	lon := c.QueryFloat("lon", 0)
-	limit := c.QueryInt("limit", 10)
+	var req types.GetTrendingRequest
 
-	if lat < -90 || lat > 90 {
-		return c.Status(fiber.StatusBadRequest).JSON(fiber.Map{
-			"error": "Latitude must be between -90 and 90",
+	if err := c.QueryParser(&req); err != nil {
+		return c.Status(fiber.StatusBadRequest).JSON(types.ErrorResponse{
+			ErrorCode: "INVALID_QUERY_PARAMS",
+			Error:     "Invalid query parameters",
 		})
 	}
 
-	if lon < -180 || lon > 180 {
-		return c.Status(fiber.StatusBadRequest).JSON(fiber.Map{
-			"error": "Longitude must be between -180 and 180",
+	if err := req.Validate(); err != nil {
+		return c.Status(fiber.StatusBadRequest).JSON(types.ErrorResponse{
+			ErrorCode: "VALIDATION_ERROR",
+			Error:     err.Error(),
 		})
 	}
 
-	if limit <= 0 {
-		return c.Status(fiber.StatusBadRequest).JSON(fiber.Map{
-			"error": "Limit must be greater than 0",
-		})
-	}
-
-	if limit > 100 {
-		limit = 100
-	}
-
-	articles, err := ac.articleService.GetTrendingNews(lat, lon, limit)
+	articles, err := ac.articleService.GetTrendingNews(req.Lat, req.Lon, req.Limit)
 	if err != nil {
-		return c.Status(fiber.StatusInternalServerError).JSON(fiber.Map{
-			"error": "Failed to retrieve trending news",
+		ac.logger.Error("Failed to retrieve trending news", err, map[string]interface{}{
+			"lat":   req.Lat,
+			"lon":   req.Lon,
+			"limit": req.Limit,
+		})
+		return c.Status(fiber.StatusInternalServerError).JSON(types.ErrorResponse{
+			ErrorCode: "TRENDING_NEWS_FAILED",
+			Error:     "Failed to retrieve trending news",
 		})
 	}
 
@@ -105,21 +108,27 @@ func (ac *ArticleController) FilterArticles(c *fiber.Ctx) error {
 	var req types.FilterArticlesRequest
 
 	if err := c.QueryParser(&req); err != nil {
-		return c.Status(fiber.StatusBadRequest).JSON(fiber.Map{
-			"error": "Invalid query parameters",
+		return c.Status(fiber.StatusBadRequest).JSON(types.ErrorResponse{
+			ErrorCode: "INVALID_QUERY_PARAMS",
+			Error:     "Invalid query parameters",
 		})
 	}
 
 	if err := req.Validate(); err != nil {
-		return c.Status(fiber.StatusBadRequest).JSON(fiber.Map{
-			"error": err.Error(),
+		return c.Status(fiber.StatusBadRequest).JSON(types.ErrorResponse{
+			ErrorCode: "VALIDATION_ERROR",
+			Error:     err.Error(),
 		})
 	}
 
 	articles, err := ac.articleService.FilterArticles(req)
 	if err != nil {
-		return c.Status(fiber.StatusInternalServerError).JSON(fiber.Map{
-			"error": "Failed to filter articles",
+		ac.logger.Error("Failed to filter articles", err, map[string]interface{}{
+			"filters": req,
+		})
+		return c.Status(fiber.StatusInternalServerError).JSON(types.ErrorResponse{
+			ErrorCode: "FILTER_ARTICLES_FAILED",
+			Error:     "Failed to filter articles",
 		})
 	}
 
@@ -133,14 +142,16 @@ func (ac *ArticleController) LoadData(c *fiber.Ctx) error {
 	var req types.LoadDataRequest
 
 	if err := c.BodyParser(&req); err != nil {
-		return c.Status(fiber.StatusBadRequest).JSON(fiber.Map{
-			"error": "Invalid request body",
+		return c.Status(fiber.StatusBadRequest).JSON(types.ErrorResponse{
+			ErrorCode: "INVALID_REQUEST_BODY",
+			Error:     "Invalid request body",
 		})
 	}
 
 	if req.Filepath == "" {
-		return c.Status(fiber.StatusBadRequest).JSON(fiber.Map{
-			"error": "Filepath field is required",
+		return c.Status(fiber.StatusBadRequest).JSON(types.ErrorResponse{
+			ErrorCode: "FILEPATH_REQUIRED",
+			Error:     "Filepath field is required",
 		})
 	}
 
@@ -158,8 +169,12 @@ func (ac *ArticleController) LoadData(c *fiber.Ctx) error {
 			return c.Status(fiber.StatusBadRequest).JSON(response)
 		}
 
-		return c.Status(fiber.StatusInternalServerError).JSON(fiber.Map{
-			"error": err.Error(),
+		ac.logger.Error("Failed to load data from file", err, map[string]interface{}{
+			"filepath": req.Filepath,
+		})
+		return c.Status(fiber.StatusInternalServerError).JSON(types.ErrorResponse{
+			ErrorCode: "DATA_LOAD_FAILED",
+			Error:     "Failed to load data from file",
 		})
 	}
 
@@ -179,21 +194,24 @@ func (ac *ArticleController) CreateArticle(c *fiber.Ctx) error {
 	var req types.CreateArticleRequest
 
 	if err := c.BodyParser(&req); err != nil {
-		return c.Status(fiber.StatusBadRequest).JSON(fiber.Map{
-			"error": "Invalid request body",
+		return c.Status(fiber.StatusBadRequest).JSON(types.ErrorResponse{
+			ErrorCode: "INVALID_REQUEST_BODY",
+			Error:     "Invalid request body",
 		})
 	}
 
 	if err := req.Validate(); err != nil {
-		return c.Status(fiber.StatusBadRequest).JSON(fiber.Map{
-			"error": err.Error(),
+		return c.Status(fiber.StatusBadRequest).JSON(types.ErrorResponse{
+			ErrorCode: "VALIDATION_ERROR",
+			Error:     err.Error(),
 		})
 	}
 
 	publicationDate, err := time.Parse("2006-01-02T15:04:05", req.PublicationDate)
 	if err != nil {
-		return c.Status(fiber.StatusBadRequest).JSON(fiber.Map{
-			"error": "Invalid publication_date format. Expected format: 2006-01-02T15:04:05",
+		return c.Status(fiber.StatusBadRequest).JSON(types.ErrorResponse{
+			ErrorCode: "INVALID_DATE_FORMAT",
+			Error:     "Invalid publication_date format. Expected format: 2006-01-02T15:04:05",
 		})
 	}
 
@@ -211,8 +229,14 @@ func (ac *ArticleController) CreateArticle(c *fiber.Ctx) error {
 	}
 
 	if err := ac.articleService.CreateArticle(article); err != nil {
-		return c.Status(fiber.StatusInternalServerError).JSON(fiber.Map{
-			"error": "Failed to create article",
+		ac.logger.Error("Failed to create article", err, map[string]interface{}{
+			"title":  req.Title,
+			"source": req.SourceName,
+			"url":    req.URL,
+		})
+		return c.Status(fiber.StatusInternalServerError).JSON(types.ErrorResponse{
+			ErrorCode: "ARTICLE_CREATION_FAILED",
+			Error:     "Failed to create article",
 		})
 	}
 

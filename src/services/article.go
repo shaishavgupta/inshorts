@@ -5,6 +5,7 @@ import (
 	"fmt"
 	"os"
 	"sort"
+	"sync"
 
 	"news-inshorts/src/infra"
 	"news-inshorts/src/models"
@@ -27,6 +28,7 @@ type articleService struct {
 	filterChain     *FilterChain
 	trendingService TrendingService
 	articleRepo     repositories.ArticleRepository
+	userEventRepo   repositories.UserEventRepository
 	logger          infra.Logger
 }
 
@@ -36,12 +38,14 @@ func NewArticleService(
 	filterChain *FilterChain,
 	trendingService TrendingService,
 	articleRepo repositories.ArticleRepository,
+	userEventRepo repositories.UserEventRepository,
 ) ArticleService {
 	return &articleService{
 		llmService:      llmService,
 		filterChain:     filterChain,
 		trendingService: trendingService,
 		articleRepo:     articleRepo,
+		userEventRepo:   userEventRepo,
 		logger:          infra.GetLogger(),
 	}
 }
@@ -49,7 +53,19 @@ func NewArticleService(
 // ProcessArticleQuery orchestrates LLM query analysis and filter chain execution
 // to retrieve and enrich relevant news articles
 func (s *articleService) ProcessArticleQuery(query string, location *models.Location) ([]models.Article, error) {
-	analysis, err := s.llmService.ProcessQuery(query)
+	allowedSources, err := s.articleRepo.GetDistinctSourceNames()
+	if err != nil {
+		s.logger.Error("Failed to get allowed sources", err, nil)
+		return nil, fmt.Errorf("failed to get allowed sources: %w", err)
+	}
+
+	allowedCategories, err := s.articleRepo.GetDistinctCategories()
+	if err != nil {
+		s.logger.Error("Failed to get allowed categories", err, nil)
+		return nil, fmt.Errorf("failed to get allowed categories: %w", err)
+	}
+
+	analysis, err := s.llmService.ProcessQuery(query, allowedSources, allowedCategories)
 	if err != nil {
 		s.logger.Error("Failed to analyze query with LLM", err, map[string]interface{}{
 			"query": query,
@@ -83,20 +99,29 @@ func (s *articleService) GetTrendingNews(lat, lon float64, limit int) ([]models.
 		Longitude: lon,
 	}
 
-	cachedArticles, found := s.trendingService.GetCachedTrending(lat, lon, limit)
-	if found {
-		return cachedArticles, nil
+	// cachedArticles, found := s.trendingService.GetCachedTrending(lat, lon, limit)
+	// if found {
+	// 	return cachedArticles, nil
+	// }
+
+	// Get distinct article IDs from user_events
+	articleIDs, err := s.userEventRepo.GetArticlesFromUserEvents()
+	if err != nil {
+		s.logger.Error("Failed to get distinct article IDs from user events", err, nil)
+		return nil, fmt.Errorf("failed to get distinct article IDs: %w", err)
 	}
 
-	articles, err := s.articleRepo.FindAll()
+	if len(articleIDs) == 0 {
+		s.logger.Info("No articles found in user events", nil)
+		return []models.Article{}, nil
+	}
+
+	// Get articles by IDs
+	articles, err := s.articleRepo.FindByIDs(articleIDs)
 	if err != nil {
 		s.logger.Error("Failed to retrieve articles for trending", err, nil)
 		return nil, fmt.Errorf("failed to retrieve articles: %w", err)
 	}
-
-	s.logger.Debug("Retrieved articles for trending computation", map[string]interface{}{
-		"count": len(articles),
-	})
 
 	type articleWithScore struct {
 		article models.Article
@@ -108,9 +133,8 @@ func (s *articleService) GetTrendingNews(lat, lon float64, limit int) ([]models.
 	for _, article := range articles {
 		score, err := s.trendingService.ComputeTrendingScore(article, location)
 		if err != nil {
-			s.logger.Warn("Failed to compute trending score for article", map[string]interface{}{
+			s.logger.Error("Failed to compute trending score for article", err, map[string]interface{}{
 				"article_id": article.ID,
-				"error":      err.Error(),
 			})
 			continue
 		}
@@ -196,32 +220,88 @@ func (s *articleService) LoadFromJSON(filepath string) (*repositories.LoadStats,
 		"total": len(articles),
 	})
 
-	s.logger.Info("Enriching articles with LLM summaries", map[string]interface{}{
+	s.logger.Info("Enriching articles with LLM summaries and embeddings", map[string]interface{}{
 		"total": len(articles),
 	})
 
-	for i := range articles {
-		summary, err := s.llmService.GenerateSummary(articles[i].Title, articles[i].Description)
-		if err != nil {
-			s.logger.Warn("Failed to generate summary for article", map[string]interface{}{
-				"index": i,
-				"title": articles[i].Title,
-				"error": err.Error(),
-			})
-			articles[i].Summary = ""
-		} else {
-			articles[i].Summary = summary
-		}
+	var wg sync.WaitGroup
+	var mu sync.Mutex
+	completedCount := 0
 
-		if (i+1)%50 == 0 {
-			s.logger.Info("Enrichment progress", map[string]interface{}{
-				"enriched": i + 1,
-				"total":    len(articles),
-			})
-		}
+	for i := range articles {
+		wg.Add(2)
+
+		// Goroutine 1: Generate summary
+		go func(idx int) {
+			defer wg.Done()
+			summary, err := s.llmService.GenerateSummary(articles[idx].Title, articles[idx].Description)
+			if err != nil {
+				s.logger.Warn("Failed to generate summary for article", map[string]interface{}{
+					"index": idx,
+					"title": articles[idx].Title,
+					"error": err.Error(),
+				})
+				mu.Lock()
+				articles[idx].Summary = ""
+				mu.Unlock()
+			} else {
+				mu.Lock()
+				articles[idx].Summary = summary
+				mu.Unlock()
+			}
+
+			// Track progress
+			mu.Lock()
+			completedCount++
+			currentCount := completedCount
+			mu.Unlock()
+
+			if currentCount%50 == 0 {
+				s.logger.Info("Enrichment progress", map[string]interface{}{
+					"completed": currentCount,
+					"total":     len(articles) * 2, // 2 operations per article
+				})
+			}
+		}(i)
+
+		// Goroutine 2: Generate embedding
+		go func(idx int) {
+			defer wg.Done()
+			embedding, err := s.llmService.GenerateEmbedding(articles[idx].Description)
+			if err != nil {
+				s.logger.Warn("Failed to generate embedding for article", map[string]interface{}{
+					"index": idx,
+					"title": articles[idx].Title,
+					"error": err.Error(),
+				})
+				mu.Lock()
+				articles[idx].DescriptionVector = nil
+				mu.Unlock()
+			} else {
+				mu.Lock()
+				articles[idx].DescriptionVector = embedding
+				mu.Unlock()
+			}
+
+			// Track progress
+			mu.Lock()
+			completedCount++
+			currentCount := completedCount
+			mu.Unlock()
+
+			if currentCount%50 == 0 {
+				s.logger.Info("Enrichment progress", map[string]interface{}{
+					"completed": currentCount,
+					"total":     len(articles) * 2, // 2 operations per article
+				})
+			}
+		}(i)
 	}
 
-	s.logger.Info("Completed enriching articles with summaries", map[string]interface{}{
+	// Wait for all goroutines to complete
+	wg.Wait()
+
+	s.logger.Info("Completed enriching articles with summaries and embeddings", map[string]interface{}{
 		"total": len(articles),
 	})
 
@@ -249,18 +329,55 @@ func (s *articleService) CreateArticle(article *models.Article) error {
 		"title": article.Title,
 	})
 
+	var wg sync.WaitGroup
+	var mu sync.Mutex
+
+	// Generate summary if not provided
 	if article.Summary == "" {
-		summary, err := s.llmService.GenerateSummary(article.Title, article.Description)
-		if err != nil {
-			s.logger.Warn("Failed to generate summary for article", map[string]interface{}{
-				"title": article.Title,
-				"error": err.Error(),
-			})
-			article.Summary = ""
-		} else {
-			article.Summary = summary
-		}
+		wg.Add(1)
+		go func() {
+			defer wg.Done()
+			summary, err := s.llmService.GenerateSummary(article.Title, article.Description)
+			if err != nil {
+				s.logger.Warn("Failed to generate summary for article", map[string]interface{}{
+					"title": article.Title,
+					"error": err.Error(),
+				})
+				mu.Lock()
+				article.Summary = ""
+				mu.Unlock()
+			} else {
+				mu.Lock()
+				article.Summary = summary
+				mu.Unlock()
+			}
+		}()
 	}
+
+	// Generate embedding if not provided
+	if len(article.DescriptionVector) == 0 {
+		wg.Add(1)
+		go func() {
+			defer wg.Done()
+			embedding, err := s.llmService.GenerateEmbedding(article.Description)
+			if err != nil {
+				s.logger.Warn("Failed to generate embedding for article", map[string]interface{}{
+					"title": article.Title,
+					"error": err.Error(),
+				})
+				mu.Lock()
+				article.DescriptionVector = nil
+				mu.Unlock()
+			} else {
+				mu.Lock()
+				article.DescriptionVector = embedding
+				mu.Unlock()
+			}
+		}()
+	}
+
+	// Wait for both goroutines to complete
+	wg.Wait()
 
 	if err := s.articleRepo.Insert(article); err != nil {
 		s.logger.Error("Failed to create article", err, map[string]interface{}{

@@ -16,6 +16,7 @@ type UserEventRepository interface {
 	Create(event *models.UserEvent) error
 	FindByArticleID(articleID string, since time.Time) ([]models.UserEvent, error)
 	FindByLocation(lat, lon, radiusKm float64, since time.Time) ([]models.UserEvent, error)
+	GetArticlesFromUserEvents() ([]string, error)
 }
 
 // userEventRepository implements UserEventRepository
@@ -51,14 +52,16 @@ func (r *userEventRepository) Create(event *models.UserEvent) error {
 			article_id,
 			event_type,
 			timestamp,
-			location
+			latitude,
+			longitude
 		) VALUES (
+			COALESCE(?::uuid, uuid_generate_v4()),
+			?,
+			?::uuid,
 			?,
 			?,
 			?,
-			?,
-			?,
-			ST_SetSRID(ST_MakePoint(?, ?), 4326)::geography
+			?
 		)
 	`
 
@@ -68,8 +71,8 @@ func (r *userEventRepository) Create(event *models.UserEvent) error {
 		event.ArticleID,
 		event.EventType,
 		event.Timestamp,
-		event.Longitude,
 		event.Latitude,
+		event.Longitude,
 	).Error; err != nil {
 		r.log.Error("Failed to create user event", err, map[string]interface{}{
 			"user_id":    event.UserID,
@@ -98,10 +101,10 @@ func (r *userEventRepository) FindByArticleID(articleID string, since time.Time)
 			article_id,
 			event_type,
 			timestamp,
-			ST_Y(location::geometry) as latitude,
-			ST_X(location::geometry) as longitude
+			latitude,
+			longitude
 		FROM user_events
-		WHERE article_id = ?
+		WHERE article_id = ?::uuid
 			AND timestamp >= ?
 		ORDER BY timestamp DESC
 	`
@@ -133,15 +136,15 @@ func (r *userEventRepository) FindByLocation(lat, lon, radiusKm float64, since t
 			article_id,
 			event_type,
 			timestamp,
-			ST_Y(location::geometry) as latitude,
-			ST_X(location::geometry) as longitude,
+			latitude,
+			longitude,
 			ST_Distance(
-				location,
+				ST_SetSRID(ST_MakePoint(longitude, latitude), 4326)::geography,
 				ST_SetSRID(ST_MakePoint(?, ?), 4326)::geography
 			) / 1000.0 as distance_km
 		FROM user_events
 		WHERE ST_DWithin(
-			location,
+			ST_SetSRID(ST_MakePoint(longitude, latitude), 4326)::geography,
 			ST_SetSRID(ST_MakePoint(?, ?), 4326)::geography,
 			? * 1000
 		)
@@ -169,4 +172,25 @@ func (r *userEventRepository) FindByLocation(lat, lon, radiusKm float64, since t
 	})
 
 	return events, nil
+}
+
+// GetArticlesFromUserEvents retrieves all distinct article IDs from user_events
+func (r *userEventRepository) GetArticlesFromUserEvents() ([]string, error) {
+	query := `
+		SELECT DISTINCT article_id
+		FROM user_events
+		ORDER BY article_id
+	`
+
+	var articleIDs []string
+	if err := r.db.Raw(query).Scan(&articleIDs).Error; err != nil {
+		r.log.Error("Failed to get distinct article IDs from user events", err, nil)
+		return nil, fmt.Errorf("failed to get distinct article IDs: %w", err)
+	}
+
+	r.log.Info("Retrieved distinct article IDs from user events", map[string]interface{}{
+		"count": len(articleIDs),
+	})
+
+	return articleIDs, nil
 }

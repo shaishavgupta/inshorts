@@ -38,39 +38,9 @@ func (uic *UserInteractionController) RecordInteraction(c *fiber.Ctx) error {
 		})
 	}
 
-	if req.UserID == "" {
+	if err := req.Validate(); err != nil {
 		return c.Status(fiber.StatusBadRequest).JSON(fiber.Map{
-			"error": "user_id field is required",
-		})
-	}
-
-	if req.ArticleID == "" {
-		return c.Status(fiber.StatusBadRequest).JSON(fiber.Map{
-			"error": "article_id field is required",
-		})
-	}
-
-	if req.EventType == "" {
-		return c.Status(fiber.StatusBadRequest).JSON(fiber.Map{
-			"error": "event_type field is required",
-		})
-	}
-
-	if req.EventType != "view" && req.EventType != "click" {
-		return c.Status(fiber.StatusBadRequest).JSON(fiber.Map{
-			"error": "event_type must be either 'view' or 'click'",
-		})
-	}
-
-	if req.Location.Latitude < -90 || req.Location.Latitude > 90 {
-		return c.Status(fiber.StatusBadRequest).JSON(fiber.Map{
-			"error": "Latitude must be between -90 and 90",
-		})
-	}
-
-	if req.Location.Longitude < -180 || req.Location.Longitude > 180 {
-		return c.Status(fiber.StatusBadRequest).JSON(fiber.Map{
-			"error": "Longitude must be between -180 and 180",
+			"error": err.Error(),
 		})
 	}
 

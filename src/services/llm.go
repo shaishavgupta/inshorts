@@ -7,6 +7,7 @@ import (
 	"fmt"
 	"io"
 	"net/http"
+	"strings"
 	"time"
 
 	"news-inshorts/src/infra"
@@ -15,8 +16,9 @@ import (
 
 // LLMService defines the interface for LLM operations
 type LLMService interface {
-	ProcessQuery(query string) (*models.QueryAnalysis, error)
+	ProcessQuery(query string, sources []string, categories []string) (*models.QueryAnalysis, error)
 	GenerateSummary(title, description string) (string, error)
+	GenerateEmbedding(text string) ([]float64, error)
 }
 
 // llmService implements the LLMService interface
@@ -78,8 +80,8 @@ type openAIResponse struct {
 }
 
 // ProcessQuery analyzes a user query using LLM to extract entities and intents
-func (s *llmService) ProcessQuery(query string) (*models.QueryAnalysis, error) {
-	prompt := s.buildQueryAnalysisPrompt(query)
+func (s *llmService) ProcessQuery(query string, sources []string, categories []string) (*models.QueryAnalysis, error) {
+	prompt := s.buildQueryAnalysisPrompt(query, sources, categories)
 
 	response, err := s.callOpenAI(prompt, 500)
 	if err != nil {
@@ -126,76 +128,196 @@ func (s *llmService) GenerateSummary(title, description string) (string, error) 
 	return response, nil
 }
 
+// GenerateEmbedding generates an embedding vector for the given text using OpenAI embeddings API
+func (s *llmService) GenerateEmbedding(text string) ([]float64, error) {
+	ctx, cancel := context.WithTimeout(context.Background(), 25*time.Second)
+	defer cancel()
+
+	embeddingRequest := struct {
+		Model string `json:"model"`
+		Input string `json:"input"`
+	}{
+		Model: "text-embedding-3-small", // or "text-embedding-ada-002" for 1536 dimensions
+		Input: text,
+	}
+
+	jsonData, err := json.Marshal(embeddingRequest)
+	if err != nil {
+		return nil, fmt.Errorf("failed to marshal embedding request: %w", err)
+	}
+
+	url := fmt.Sprintf("%s/embeddings", s.config.APIURL)
+	req, err := http.NewRequestWithContext(ctx, "POST", url, bytes.NewBuffer(jsonData))
+	if err != nil {
+		return nil, fmt.Errorf("failed to create embedding request: %w", err)
+	}
+
+	req.Header.Set("Content-Type", "application/json")
+	req.Header.Set("Authorization", fmt.Sprintf("Bearer %s", s.config.APIKey))
+
+	resp, err := s.httpClient.Do(req)
+	if err != nil {
+		return nil, fmt.Errorf("failed to call OpenAI embeddings API: %w", err)
+	}
+	defer resp.Body.Close()
+
+	body, err := io.ReadAll(resp.Body)
+	if err != nil {
+		return nil, fmt.Errorf("failed to read embedding response body: %w", err)
+	}
+
+	if resp.StatusCode != http.StatusOK {
+		return nil, fmt.Errorf("OpenAI embeddings API returned status %d: %s", resp.StatusCode, string(body))
+	}
+
+	var embeddingResp struct {
+		Data []struct {
+			Embedding []float64 `json:"embedding"`
+		} `json:"data"`
+		Error *struct {
+			Message string `json:"message"`
+			Type    string `json:"type"`
+			Code    string `json:"code"`
+		} `json:"error,omitempty"`
+	}
+
+	if err := json.Unmarshal(body, &embeddingResp); err != nil {
+		return nil, fmt.Errorf("failed to unmarshal embedding response: %w", err)
+	}
+
+	if embeddingResp.Error != nil {
+		return nil, fmt.Errorf("OpenAI embeddings API error: %s", embeddingResp.Error.Message)
+	}
+
+	if len(embeddingResp.Data) == 0 {
+		return nil, fmt.Errorf("no embedding data in OpenAI response")
+	}
+
+	s.logger.Debug("Successfully generated embedding", map[string]interface{}{
+		"dimensions": len(embeddingResp.Data[0].Embedding),
+	})
+
+	return embeddingResp.Data[0].Embedding, nil
+}
+
 // buildQueryAnalysisPrompt creates the prompt for query analysis
-func (s *llmService) buildQueryAnalysisPrompt(query string) string {
-	return fmt.Sprintf(`You are an entity and intent extraction model for a news retrieval backend.
+func (s *llmService) buildQueryAnalysisPrompt(query string, sources []string, categories []string) string {
+	return fmt.Sprintf(`You are an intelligent query parser for a Contextual News Retrieval System. Your task is to analyze a user's natural-language news query and convert it into structured intent-based filters.
 
-Analyze the user's query and return ONLY a valid JSON object with this schema:
+1. INPUTS
+
+You will always receive:
+
+A list of Valid Categories
+
+A list of Allowed Sources
+
+The user's Search Query
+
+2. REQUIRED JSON OUTPUT FORMAT
+
+Respond with ONLY a single valid JSON object, nothing else:
 
 {
-  "entities": [],        // list of entity names as strings (people, organizations, places, events)
-  "intent": {
-    "category": {
-      "values": []      // list of news categories/topics to search for
-    },
-    "source": {
-      "values": []      // list of news sources/publishers to consider
-    },
-    "nearby": {
-      "lat": null,      // latitude if location intent exists, else null
-      "lon": null       // longitude if location intent exists, else null
-    }
-  }
+"entities": [],
+"intent": {
+"category": { "values": [] },
+"source": { "values": [] },
+"nearby": { "lat": null, "lon": null }
+}
 }
 
-### Rules:
-- Extract ALL important named entities into entities[] as plain strings.
-  (Examples: people, publishers, companies, places, events like acquisition, war, election, etc.)
-- If the user asks for specific news topics like Technology, Sports, Business, etc., put them in category.values.
-- If the user mentions specific publishers/sources, put them in source.values.
-- If the user asks for news “near/around a location” or “near me”, classify geo intent and include the place name inside entities[], but do NOT generate coordinates.
-  If coordinates are already given by the user, copy them into nearby.lat and nearby.lon.
-- If no intent is present for a key, keep the list empty or null values instead of removing the field.
-- Do NOT add explanations, code blocks, or extra text outside JSON.
+3. CATEGORY MATCHING RULES
 
-### Examples (strict format):
-Input: "Latest updates on AI companies like OpenAI and Google near Delhi"
+Map category values only from the provided Valid Categories list.
+
+Perform fuzzy matching on query tokens (order-agnostic, case-insensitive, mild misspell tolerant).
+
+Output must always be lowercase.
+
+4. SOURCE MATCHING RULES
+
+Map source values only from the provided Allowed Sources list.
+
+Perform fuzzy matching (partial match, abbreviations, mild misspell, different casing).
+
+If the query token refers to a cluster (e.g., "abp" or "ani"), include all matching variants from the list.
+
+Generic nouns like "news", "updates", "articles" must be ignored and excluded from source matches.
+
+5. LOCATION / NEARBY INTENT (Updated)
+
+If the query contains any real place name (city, region, country, landmark), you must:
+
+Activate the nearby intent.
+
+Insert that place name into entities[].
+
+Generate approximate latitude & longitude of that place and populate nearby.lat and nearby.lon.
+
+Example: "Delhi" → 28.61, 77.23
+
+"Mumbai" → 19.07, 72.88
+
+"Palo Alto" → 37.44, -122.14
+
+"Paris" → 48.85, 2.34
+
+If multiple places are present, choose the most relevant one for proximity and still include all in entities.
+
+You may approximate; slight offsets are acceptable, do not be exact.
+
+6. ENTITY EXTRACTION RULES
+
+Extract all key real-world names (people, orgs, places, events, concepts) into entities[].
+
+Do not change case of entities except preserving spelling.
+
+7. PLACEHOLDER SECTION YOU MUST KEEP
+Valid Categories: %s
+
+Allowed Sources: %s
+
+8. MATCHING PRIORITY RULES
+
+Do NOT emit new strings in category or source values that do not exist in the allowed lists.
+
+Only the nearby lat/lon may be approximated when a place name is present.
+
+9. EXAMPLES (Follow strictly)
+
+Input Query: "latest news near Paris from ANI"
+Allowed Sources: ["ANI","BBC","DW"]
+Allowed Categories: ["world","technology","sports","science"]
+
 Output:
 {
-  "entities": ["OpenAI", "Google", "Delhi", "AI companies"],
-  "intent": {
-    "category": { "values": ["technology", "artificial intelligence"] },
-    "source": { "values": [] },
-    "nearby": { "lat": null, "lon": null }
-  }
+"entities": ["Paris","ANI","paris"],
+"intent": {
+"category": { "values": [] },
+"source": { "values": ["ANI"] },
+"nearby": { "lat": 48.85, "lon": 2.34 }
+}
 }
 
-Input: "Breaking sports news near me"
-Output:
-{
-  "entities": ["sports", "near me"],
-  "intent": {
-    "category": { "values": ["sports"] },
-    "source": { "values": [] },
-    "nearby": { "lat": null, "lon": null }
-  }
-}
+Input Query: "technology updates from News18 Mumbai"
+Allowed Sources: ["News18","Reuters","DW","BBC"]
+Allowed Categories: ["technology","sports","world"]
 
-Input: "Top tech news from Reuters and DW"
 Output:
 {
-  "entities": ["Reuters", "DW", "tech news"],
-  "intent": {
-    "category": { "values": ["technology"] },
-    "source": { "values": ["Reuters", "DW"] },
-    "nearby": { "lat": null, "lon": null }
-  }
+"entities": ["News18","Mumbai","technology"],
+"intent": {
+"category": { "values": ["technology"] },
+"source": { "values": ["News18"] },
+"nearby": { "lat": 19.07, "lon": 72.88 }
+}
 }
 
 Now analyze the following query:
 
-Input: "%s"
-`, query)
+Input Query: "%s"
+`, strings.Join(categories, ", "), strings.Join(sources, ", "), query)
 }
 
 // buildSummaryPrompt creates the prompt for article summarization
